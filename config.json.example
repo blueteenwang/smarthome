@@ -1,0 +1,130 @@
+{
+  "_README": "复制这个文件为 config.json 并填入你自己的真实凭据。所有 *** 处必须替换。完整字段含义见 DEPLOY.md。",
+
+  "server": {
+    "port": 8090
+  },
+
+  "homeAssistant": {
+    "_doc": "HA 长期访问令牌：HA → 个人资料 → 安全 → 长期访问令牌 → 创建。建议设置过期时间 ≥ 1 年。",
+    "url": "http://192.168.X.X:8123",
+    "token": "***YOUR_HA_LONG_LIVED_TOKEN***"
+  },
+
+  "camera": {
+    "forceSnapshotMode": false,
+    "_doc": "RTSP 地址。群晖 Surveillance Station 用户：路径形如 rtsp://USER:PASSWORD@NAS_IP:554/Sms=N.unicast。直连摄像头：参考厂商手册（萤石/海康/小米等）。captureIntervalSec=AI 分析间隔；snapshotRefreshSec=画面刷新间隔。",
+    "rtspUrl": "rtsp://USER:PASSWORD@192.168.X.X:554/Sms=5.unicast",
+    "captureIntervalSec": 60,
+    "snapshotFps": 0.1,
+    "snapshotWidth": 640,
+    "snapshotRefreshSec": 30,
+    "streamFps": 10,
+    "streamWidth": 720
+  },
+
+  "audio": {
+    "_doc": "音频分析（识别说话/环境声/情绪）。captureIntervalSec=每 N 秒采一次；captureDurationSec=每次采样时长。",
+    "enabled": true,
+    "captureDurationSec": 10,
+    "captureIntervalSec": 20,
+    "transcribePrompt": "请听这段家庭摄像头录制的音频。1)如果有人说话，逐字转写对话内容，has_speech设为true。2)如果没有人说话，描述听到的环境声音（如空调运转声、电视声、水声、风扇声、安静无声等），has_speech设为false。text字段不能为空。用JSON格式回复：{\"has_speech\": true/false, \"text\": \"转写内容或环境音描述\", \"emotion\": \"neutral/happy/angry/sad/excited\"}"
+  },
+
+  "ai": {
+    "_doc": "DashScope API（阿里云百炼）。注册：https://bailian.console.aliyun.com/。baseUrl 不要带 /chat/completions 后缀。model 用于视觉分析，commandModel 用于自然语言指令解析。",
+    "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "apiKey": "sk-***YOUR_DASHSCOPE_API_KEY***",
+    "model": "qwen3-vl-235b-a22b-instruct",
+    "commandModel": "qwen3-max",
+    "analysisIntervalSec": 60,
+    "analysisPrompt": "你是一个智能家居AI助手。请分析这张家庭摄像头画面，简洁描述：\n1. 当前场景（房间、光线、人物活动）\n2. 人在做什么\n3. 环境状态（亮度、是否有人、门窗状态）\n4. 基于观察给出2-3条智能家居操作建议\n\n请用JSON格式回复：\n{\"scene\": \"一句话描述场景\", \"status\": [\"状态标签1\",\"状态标签2\"], \"brightness\": \"bright/dim/dark\", \"occupied\": true/false, \"suggestions\": [{\"action\": \"操作描述\", \"domain\": \"light/cover/climate\", \"icon\": \"emoji\"}]}"
+  },
+
+  "rooms": [
+    { "id": "living_room", "name": "客厅", "icon": "🛋️" },
+    { "id": "master_bedroom", "name": "主卧", "icon": "🛏️" },
+    { "id": "study", "name": "书房", "icon": "📚" },
+    { "id": "kitchen", "name": "厨房", "icon": "🍳" },
+    { "id": "balcony", "name": "阳台", "icon": "🌤️" }
+  ],
+
+  "voiceControl": {
+    "_doc": "语音唤醒控制。Docker 部署默认 audioSource=rtsp（从摄像头音频流唤醒），不能用 local（容器内无 macOS avfoundation）。wakeWords 多个用数组。",
+    "enabled": false,
+    "wakeWords": ["管家"],
+    "vad": {
+      "energyThresholdOn": 0.018,
+      "energyThresholdOff": 0.01,
+      "minSpeechMs": 300,
+      "silenceTimeoutMs": 1000,
+      "maxUtteranceMs": 8000,
+      "preRollMs": 200,
+      "partialIntervalMs": 1500
+    },
+    "asrModel": "qwen3-omni-flash",
+    "asrPrompt": "请逐字精准转写这段中文家庭语音指令的内容。只输出转写文本，不要加任何解释、标点或前缀。",
+    "responseTimeoutSec": 10,
+    "feedbackText": true,
+    "partialAsr": true,
+    "semanticGate": true,
+    "audioSource": "rtsp",
+    "tts": {
+      "enabled": false,
+      "voice": "Tingting",
+      "rate": 200
+    }
+  },
+
+  "automation": {
+    "enabled": true,
+    "defaultCooldownSec": 300,
+    "observationHours": 24,
+    "rules": []
+  },
+
+  "llmPricing": {
+    "qwen3-vl-235b-a22b-instruct": { "in": 0.002, "out": 0.008 },
+    "qwen3-max": { "in": 0.006, "out": 0.024 },
+    "qwen3-omni-flash": { "in": 0.0008, "out": 0.002 },
+    "qwen-turbo": { "in": 0.0003, "out": 0.0006 }
+  },
+
+  "xiaoai": {
+    "_doc": "小爱音箱播报（通过 HA notify 集成调用）。先在 HA 装 ha-xiaomi-home/Xiaomi Miot 集成，把音箱接入 HA，然后 entity_id 在 HA 开发者工具→服务→选 notify.xiaomi_*_play_text_* 复制。",
+    "enabled": false,
+    "defaultSpeaker": "notify.xiaomi_***_play_text_***",
+    "speakers": [
+      {
+        "name": "客厅音箱",
+        "entity_id": "notify.xiaomi_***_play_text_***"
+      }
+    ],
+    "triggerOn": {
+      "nlCommand": true,
+      "ruleTrigger": true,
+      "aiSuggestion": false,
+      "qaCommand": true
+    },
+    "fallbackToLocalSay": false,
+    "maxLength": 200
+  },
+
+  "voice": {
+    "qa": {
+      "enabled": true,
+      "model": "qwen-turbo",
+      "maxTokens": 80,
+      "systemPrompt": "你是家庭语音助手王管家。当前不是家电控制指令，请用一句话简短回答（≤30个字）。",
+      "fallbackText": "抱歉，这个问题我暂时帮不了。",
+      "timeoutMs": 8000
+    },
+    "naturalReply": {
+      "enabled": true,
+      "model": "qwen-turbo",
+      "maxTokens": 60,
+      "timeoutMs": 4000,
+      "systemPrompt": "你是温暖贴心的家庭助手王管家。根据用户说的话和实际执行的家电操作，用一句口语化中文回应用户（不超过30字）。"
+    }
+  }
+}

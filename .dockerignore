@@ -1,0 +1,44 @@
+# 不打进镜像的文件 —— 控制镜像体积 + 防止敏感信息进 layer
+
+# === 敏感配置（必排除，含 RTSP 密码 / HA token / DashScope key） ===
+config.json
+
+# === 历史/备份/截图 ===
+*.bak
+*.bak.*
+index.html.bak
+index-v2.html.bak
+before/
+redesign/
+snapshots/
+audio/
+
+# === macOS 元数据 ===
+.DS_Store
+**/.DS_Store
+
+# === 文档/工具 ===
+*.md
+docs/
+README*
+
+# === 编辑器 ===
+.vscode/
+.idea/
+*.swp
+
+# === Node 缓存（zero-dep 项目本不该有，保险起见） ===
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# === 自身 docker 元 ===
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# === 环境/CI ===
+.env
+.env.*
+.git/
+.github/

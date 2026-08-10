@@ -1,0 +1,3896 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 智能家居控制中心</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg-primary: #0a0e1a;
+  --bg-secondary: #111827;
+  --bg-card: rgba(17, 24, 39, 0.8);
+  --bg-card-hover: rgba(30, 41, 59, 0.9);
+  --border: rgba(99, 102, 241, 0.2);
+  --border-active: rgba(99, 102, 241, 0.6);
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-dim: #64748b;
+  --accent: #6366f1;
+  --accent-glow: rgba(99, 102, 241, 0.3);
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --info: #06b6d4;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Animated background */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: 
+    radial-gradient(ellipse at 20% 50%, rgba(99, 102, 241, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(6, 182, 212, 0.05) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, rgba(139, 92, 246, 0.05) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Header */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  backdrop-filter: blur(20px);
+  background: rgba(10, 14, 26, 0.85);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo {
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.header-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+
+.header-subtitle {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.status-indicators {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.status-dot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.status-dot::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: pulse 2s infinite;
+}
+
+.status-dot.offline::before {
+  background: var(--danger);
+  animation: none;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Main Layout */
+.main {
+  position: relative;
+  z-index: 1;
+  padding: 20px;
+  max-width: 1600px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto auto;
+  gap: 16px;
+}
+
+/* Cards */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  backdrop-filter: blur(10px);
+  transition: all 0.3s ease;
+}
+
+.card:hover {
+  border-color: var(--border-active);
+  box-shadow: 0 0 30px rgba(99, 102, 241, 0.1);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-title .icon {
+  font-size: 16px;
+}
+
+.card-badge {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 20px;
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* Camera Section */
+.camera-section {
+  grid-column: 1 / 2;
+  grid-row: 1 / 3;
+}
+
+.camera-feed {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16/9;
+  background: #000;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.camera-feed img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.camera-feed .overlay {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  padding: 12px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.7) 0%, transparent 100%);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.camera-feed .live-badge {
+  background: var(--danger);
+  color: white;
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  animation: pulse 1.5s infinite;
+}
+
+.camera-feed .timestamp {
+  font-size: 11px;
+  color: rgba(255,255,255,0.7);
+  font-family: 'SF Mono', monospace;
+}
+
+.camera-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.btn.primary:hover {
+  background: #5558e6;
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* AI Analysis Section */
+.ai-section {
+  grid-column: 2 / 3;
+  grid-row: 1 / 2;
+}
+
+.analysis-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.scene-description {
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.6;
+  padding: 12px;
+  background: rgba(99, 102, 241, 0.05);
+  border-radius: 10px;
+  border-left: 3px solid var(--accent);
+}
+
+.status-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.status-tag {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: rgba(6, 182, 212, 0.1);
+  color: var(--info);
+  border: 1px solid rgba(6, 182, 212, 0.2);
+}
+
+.suggestions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.suggestion-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(16, 185, 129, 0.05);
+  border: 1px solid rgba(16, 185, 129, 0.15);
+  border-radius: 10px;
+  transition: all 0.2s;
+  cursor: pointer;
+}
+
+.suggestion-item:hover {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.suggestion-item .text {
+  font-size: 13px;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.suggestion-item .execute-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--success);
+  color: white;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.suggestion-item .execute-btn:hover {
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+}
+
+/* Command Input */
+.command-section {
+  grid-column: 2 / 3;
+  grid-row: 2 / 3;
+}
+
+.command-input-wrapper {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.command-input {
+  flex: 1;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.8);
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.3s;
+}
+
+.command-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.command-input::placeholder {
+  color: var(--text-dim);
+}
+
+.command-response {
+  min-height: 60px;
+  padding: 12px;
+  background: rgba(15, 23, 42, 0.5);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  border: 1px solid transparent;
+  transition: all 0.3s;
+}
+
+.command-response.active {
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+/* Devices Section */
+.devices-section {
+  grid-column: 1 / -1;
+}
+
+.room-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.room-tab {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+  border: 1px solid transparent;
+}
+
+.room-tab:hover {
+  color: var(--text-primary);
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.room-tab.active {
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.devices-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.device-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.device-search-box input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(15,23,42,0.6);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.device-search-box input:focus {
+  border-color: var(--accent);
+}
+.device-search-box input::placeholder {
+  color: var(--text-muted);
+}
+
+.device-type-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.type-filter-btn {
+  padding: 4px 10px;
+  border-radius: 14px;
+  font-size: 11px;
+  cursor: pointer;
+  background: rgba(30,41,59,0.7);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+.type-filter-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+.type-filter-btn.active {
+  background: rgba(99,102,241,0.15);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.device-card {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: all 0.25s;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.device-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: transparent;
+  transition: background 0.3s;
+}
+
+.device-card.on::before {
+  background: linear-gradient(90deg, var(--accent), var(--info));
+}
+
+.device-card.on {
+  border-color: var(--border-active);
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.device-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+}
+
+.device-icon {
+  font-size: 20px;
+}
+
+.device-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.device-toggle {
+  width: 32px; height: 18px;
+  border-radius: 9px;
+  background: rgba(100,116,139,0.4);
+  position: relative;
+  transition: background 0.2s;
+}
+.device-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #94a3b8;
+  transition: all 0.2s;
+}
+.device-toggle.on {
+  background: rgba(99,102,241,0.7);
+}
+.device-toggle.on::after {
+  left: 16px;
+  background: #fff;
+}
+
+.device-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-subtext {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.device-card.on .device-subtext {
+  color: var(--accent);
+}
+
+/* Rich device card styles */
+.device-card.rich {
+  min-height: 120px;
+  gap: 8px;
+}
+.device-card.rich .device-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+/* Climate card */
+.climate-info {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.climate-current-temp {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+}
+.climate-unit {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.climate-target {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+.climate-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.climate-mode-btn {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(100,116,139,0.2);
+  color: var(--text-muted);
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.climate-mode-btn.active {
+  background: rgba(99,102,241,0.3);
+  color: var(--accent);
+}
+.climate-temp-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.climate-temp-btn {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  line-height: 1;
+}
+.climate-temp-btn:hover {
+  background: rgba(99,102,241,0.2);
+  border-color: var(--accent);
+}
+.climate-temp-val {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 30px;
+  text-align: center;
+}
+.climate-fan {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* Cover / curtain card */
+.cover-visual {
+  position: relative;
+  height: 28px;
+  border-radius: 4px;
+  background: rgba(100,116,139,0.15);
+  overflow: hidden;
+}
+.cover-fill {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  background: linear-gradient(90deg, rgba(99,102,241,0.4), rgba(99,102,241,0.15));
+  transition: width 0.5s ease;
+  border-radius: 4px;
+}
+.cover-percent {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.cover-btns {
+  display: flex;
+  gap: 4px;
+}
+.cover-btn {
+  flex: 1;
+  padding: 4px 0;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.2s;
+}
+.cover-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Light brightness bar */
+.light-brightness {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.light-bar-wrap {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(100,116,139,0.2);
+  position: relative;
+  cursor: pointer;
+}
+.light-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  transition: width 0.3s;
+}
+.light-bar-val {
+  font-size: 10px;
+  color: var(--text-muted);
+  min-width: 26px;
+  text-align: right;
+}
+.light-color-temp {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* Fan card */
+.fan-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fan-speed-dots {
+  display: flex;
+  gap: 3px;
+}
+.fan-speed-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: rgba(100,116,139,0.3);
+  transition: background 0.2s;
+}
+.fan-speed-dot.active {
+  background: var(--accent);
+}
+.fan-mode {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+.fan-osc {
+  font-size: 10px;
+  color: var(--accent);
+}
+
+/* Media player card */
+.media-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.media-vol-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(100,116,139,0.2);
+  cursor: pointer;
+}
+.media-vol-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--info);
+  transition: width 0.3s;
+}
+.media-vol-val {
+  font-size: 10px;
+  color: var(--text-muted);
+  min-width: 24px;
+  text-align: right;
+}
+.media-state-icon {
+  font-size: 14px;
+}
+
+/* Vacuum card */
+.vacuum-btns {
+  display: flex;
+  gap: 4px;
+}
+.vacuum-btn {
+  flex: 1;
+  padding: 4px 0;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.2s;
+}
+.vacuum-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Stats Bar */
+.stats-bar {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.stat-card {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--accent), var(--info));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.stat-tokens {
+  cursor: pointer;
+  position: relative;
+  background: linear-gradient(135deg, rgba(244,63,94,0.08), rgba(168,85,247,0.08)) !important;
+  border-color: rgba(168,85,247,0.25) !important;
+}
+.stat-tokens:hover {
+  border-color: rgba(168,85,247,0.5) !important;
+  transform: translateY(-1px);
+}
+.stat-tokens .stat-value {
+  background: linear-gradient(135deg, #f472b6, #a855f7) !important;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.stat-tokens .stat-unit { font-size: 13px; color: #c084fc; }
+.stat-tokens .stat-label { color: #d8b4fe; }
+
+/* ============ Automation Rules ============ */
+.stat-rules {
+  cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease;
+  background: linear-gradient(135deg, rgba(34,211,238,0.08), rgba(16,185,129,0.08));
+  border: 1px solid rgba(34,211,238,0.25);
+}
+.stat-rules:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(34,211,238,0.18);
+}
+.stat-rules .stat-value {
+  background: linear-gradient(120deg, #22d3ee 0%, #10b981 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.stat-rules .stat-unit { font-size: 13px; color: #67e8f9; }
+.stat-rules .stat-label { color: #a7f3d0; display: inline-flex; align-items: center; gap: 6px; }
+.auto-badge {
+  font-size: 9px; padding: 2px 6px; border-radius: 8px; font-weight: 700; letter-spacing: 0.5px;
+}
+.auto-badge.auto-on { background: #10b981; color: #022c22; }
+.auto-badge.auto-off { background: rgba(239,68,68,0.4); color: #fecaca; }
+
+.rules-panel-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(2, 6, 23, 0.55);
+  backdrop-filter: blur(3px);
+  display: none;
+  animation: backdropIn 0.18s ease-out;
+}
+.rules-panel-backdrop.active { display: block; }
+@keyframes backdropIn { from { opacity: 0; } to { opacity: 1; } }
+
+.rules-panel {
+  position: fixed; top: 50%; left: 50%; z-index: 1001;
+  transform: translate(-50%, -50%);
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  background: rgba(15, 23, 42, 0.97);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(34,211,238,0.3);
+  border-radius: 14px; padding: 18px;
+  box-shadow: 0 30px 80px rgba(0,0,0,0.7), 0 0 0 1px rgba(34,211,238,0.12);
+  font-size: 13px; color: #e2e8f0;
+  animation: rulesPanelIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes rulesPanelIn {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.94); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+.rules-panel-header {
+  display: flex; align-items: center; gap: 12px;
+  font-weight: 600; font-size: 14px; color: #a7f3d0;
+  padding-bottom: 8px; border-bottom: 1px solid rgba(34,211,238,0.2);
+  margin-bottom: 10px;
+}
+.rules-panel-header > span:first-child { flex: 1; }
+.rules-panel-close { cursor: pointer; font-size: 22px; line-height: 1; color: #94a3b8; padding: 0 6px; }
+.rules-panel-close:hover { color: #fff; }
+.auto-master { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+.auto-master input { cursor: pointer; }
+
+.rules-tabs {
+  display: flex; gap: 4px; margin-bottom: 12px;
+  border-bottom: 1px solid rgba(34,211,238,0.15);
+}
+.rules-tab-btn {
+  flex: 1; background: transparent; color: #94a3b8;
+  border: none; border-bottom: 2px solid transparent;
+  padding: 8px 10px; cursor: pointer; font-size: 12px;
+  transition: all 0.15s ease;
+}
+.rules-tab-btn:hover { color: #e2e8f0; }
+.rules-tab-btn.active { color: #22d3ee; border-bottom-color: #22d3ee; }
+.rules-tab-pane { display: none; }
+.rules-tab-pane.active { display: block; }
+
+.rules-list { display: flex; flex-direction: column; gap: 8px; }
+.rule-item {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(34,211,238,0.15);
+  border-radius: 10px; padding: 10px 12px;
+}
+.rule-item.disabled { opacity: 0.5; }
+.rule-item-header {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 6px;
+}
+.rule-item-name { font-weight: 600; flex: 1; color: #f1f5f9; }
+.rule-trigger-pill {
+  font-size: 10px; padding: 2px 6px; border-radius: 6px;
+  background: rgba(34,211,238,0.15); color: #67e8f9;
+}
+.rule-dry-pill {
+  font-size: 10px; padding: 2px 6px; border-radius: 6px;
+  background: rgba(245,158,11,0.2); color: #fcd34d;
+}
+.rule-item-meta { font-size: 11px; color: #94a3b8; line-height: 1.6; }
+.rule-item-meta b { color: #cbd5e1; font-weight: 500; }
+.rule-item-actions {
+  display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;
+}
+.rule-item-actions button {
+  background: rgba(34,211,238,0.1); border: 1px solid rgba(34,211,238,0.25);
+  color: #67e8f9; border-radius: 6px; padding: 4px 8px;
+  font-size: 11px; cursor: pointer; transition: all 0.15s;
+}
+.rule-item-actions button:hover { background: rgba(34,211,238,0.2); }
+.rule-item-actions button.danger {
+  background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.25); color: #fca5a5;
+}
+.rule-item-actions button.danger:hover { background: rgba(239,68,68,0.25); }
+
+.rule-form { display: flex; flex-direction: column; gap: 8px; }
+.rule-form label { font-size: 11px; color: #94a3b8; margin-top: 4px; }
+.rule-form input[type=text], .rule-form input:not([type=checkbox]):not([type=radio]),
+.rule-form textarea {
+  background: rgba(15,23,42,0.6); border: 1px solid rgba(34,211,238,0.2);
+  color: #f1f5f9; border-radius: 6px; padding: 8px 10px;
+  font-size: 13px; font-family: inherit; resize: vertical;
+}
+.rule-form textarea:focus, .rule-form input:focus { outline: none; border-color: #22d3ee; }
+.rule-trigger-row { display: flex; gap: 12px; }
+.rule-radio { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; font-size: 12px; }
+.rule-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; }
+.rule-check { display: flex; gap: 6px; align-items: center; cursor: pointer; font-size: 12px; }
+.rule-save-btn {
+  background: linear-gradient(120deg, #22d3ee 0%, #10b981 100%);
+  color: #022c22; font-weight: 600;
+  border: none; border-radius: 8px; padding: 9px;
+  cursor: pointer; margin-top: 8px; font-size: 13px;
+  transition: transform 0.1s;
+}
+.rule-save-btn:hover { transform: translateY(-1px); }
+.rule-save-btn:active { transform: translateY(0); }
+.rule-form-hint { font-size: 11px; color: #94a3b8; min-height: 16px; }
+
+.rules-history { display: flex; flex-direction: column; gap: 8px; }
+.history-item {
+  background: rgba(255,255,255,0.03);
+  border-left: 3px solid #22d3ee;
+  border-radius: 6px; padding: 8px 10px;
+  font-size: 12px;
+}
+.history-item.dryrun { border-left-color: #fcd34d; }
+.history-item.failed { border-left-color: #ef4444; }
+.history-item-time { font-size: 10px; color: #64748b; }
+.history-item-name { font-weight: 600; color: #f1f5f9; margin: 2px 0; }
+.history-item-detail { color: #94a3b8; font-size: 11px; line-height: 1.5; }
+
+.token-panel {
+  position: fixed; top: 80px; right: 16px; z-index: 1000;
+  width: 380px; max-height: 70vh; overflow-y: auto;
+  background: rgba(15, 23, 42, 0.96);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(168,85,247,0.3);
+  border-radius: 12px; padding: 14px;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.55), 0 0 0 1px rgba(168,85,247,0.1);
+  font-size: 12px;
+  animation: tokenPanelIn 0.2s ease-out;
+}
+@keyframes tokenPanelIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.token-panel-header {
+  display: flex; justify-content: space-between; align-items: center;
+  font-weight: 600; font-size: 14px; color: #e9d5ff;
+  margin-bottom: 10px; padding-bottom: 8px;
+  border-bottom: 1px solid rgba(168,85,247,0.2);
+}
+.token-panel-close {
+  cursor: pointer; font-size: 22px; line-height: 1;
+  color: #94a3b8; padding: 0 6px;
+}
+.token-panel-close:hover { color: #fff; }
+.token-summary {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 6px; margin-bottom: 10px;
+}
+.token-summary > div {
+  background: rgba(99,102,241,0.06);
+  padding: 6px 8px; border-radius: 6px;
+}
+.token-summary .lbl { color: #94a3b8; font-size: 10px; text-transform: uppercase; }
+.token-summary .val { color: #e2e8f0; font-size: 14px; font-weight: 600; }
+.token-section-title {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+  color: #a855f7; margin: 12px 0 6px; font-weight: 600;
+}
+.token-by-model > div, .token-by-type > div {
+  display: grid; grid-template-columns: 1fr auto auto;
+  gap: 8px; padding: 5px 8px; margin-bottom: 3px;
+  background: rgba(255,255,255,0.025); border-radius: 4px;
+  font-size: 11px; align-items: center;
+}
+.token-by-model .name, .token-by-type .name {
+  color: #cbd5e1; font-weight: 500; font-family: 'JetBrains Mono', monospace;
+}
+.token-by-model .num, .token-by-type .num { color: #fbbf24; }
+.token-by-model .calls, .token-by-type .calls { color: #94a3b8; font-size: 10px; }
+.token-recent {
+  max-height: 160px; overflow-y: auto;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: #94a3b8; line-height: 1.7;
+}
+.token-recent .row { display: grid; grid-template-columns: 60px 1fr auto; gap: 6px; }
+.token-recent .ts { color: #64748b; }
+.token-recent .type { color: #c084fc; }
+.token-recent .tok { color: #fbbf24; text-align: right; }
+
+/* Loading / Spinner */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(99, 102, 241, 0.3);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+  .main {
+    grid-template-columns: 1fr;
+  }
+  .camera-section { grid-column: 1; grid-row: auto; }
+  .ai-section { grid-column: 1; grid-row: auto; }
+  .command-section { grid-column: 1; grid-row: auto; }
+  .devices-section { grid-column: 1; }
+  .stats-bar { grid-column: 1; grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 640px) {
+  .main { padding: 12px; }
+  .header { padding: 12px 16px; }
+  .devices-grid { grid-template-columns: repeat(2, 1fr); }
+  .stats-bar { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+
+/* Audio Transcription */
+.audio-section {
+  grid-column: 1 / -1;
+}
+
+.transcript-feed {
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px;
+}
+
+.transcript-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.5;
+  animation: fadeInUp 0.3s ease;
+}
+
+.transcript-item.speech {
+  border-left: 3px solid var(--accent);
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.transcript-item.ambient {
+  border-left: 3px solid var(--text-dim);
+  opacity: 0.7;
+}
+
+.transcript-item .time {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-family: 'SF Mono', monospace;
+  min-width: 65px;
+}
+
+.transcript-item .content {
+  flex: 1;
+  color: var(--text-primary);
+}
+
+.transcript-item .emotion-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.transcript-empty {
+  text-align: center;
+  padding: 30px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* Glow effect */
+.glow {
+  box-shadow: 0 0 30px var(--accent-glow), inset 0 0 30px rgba(99, 102, 241, 0.03);
+}
+/* === Voice Control === */
+.voice-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 20px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(148,163,184,0.25);
+  color: #cbd5e1; font-size: 12px; cursor: pointer;
+  transition: all 0.25s ease;
+}
+.voice-toggle:hover { background: rgba(255,255,255,0.10); }
+.voice-toggle.on {
+  background: linear-gradient(135deg, rgba(239,68,68,0.25), rgba(236,72,153,0.25));
+  border-color: rgba(239,68,68,0.6); color: #fef2f2;
+  box-shadow: 0 0 18px rgba(239,68,68,0.35);
+}
+.voice-toggle.on .voice-toggle-icon {
+  animation: pulse-mic 1.5s ease-in-out infinite;
+}
+@keyframes pulse-mic {
+  0%,100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.7; }
+}
+.voice-panel {
+  position: fixed; right: 20px; bottom: 20px; z-index: 999;
+  width: 360px; max-width: calc(100vw - 40px);
+  background: rgba(15,23,42,0.92);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(99,102,241,0.35);
+  border-radius: 16px;
+  box-shadow: 0 18px 40px rgba(0,0,0,0.55);
+  padding: 14px 16px;
+  display: none;
+  font-size: 13px; color: #e2e8f0;
+}
+.voice-panel.active { display: block; }
+.voice-panel-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 10px; padding-bottom: 8px;
+  border-bottom: 1px solid rgba(148,163,184,0.18);
+}
+.voice-panel-title { font-weight: 600; font-size: 13px; letter-spacing: 0.3px; }
+.voice-state-badge {
+  font-size: 11px; padding: 2px 9px; border-radius: 10px;
+  background: rgba(34,197,94,0.18); color: #4ade80;
+  border: 1px solid rgba(34,197,94,0.4);
+}
+.voice-state-badge.recording { background: rgba(239,68,68,0.18); color: #fca5a5; border-color: rgba(239,68,68,0.5); }
+.voice-state-badge.asr      { background: rgba(59,130,246,0.18); color: #93c5fd; border-color: rgba(59,130,246,0.5); }
+.voice-state-badge.parsing  { background: rgba(234,179,8,0.18);  color: #fde68a; border-color: rgba(234,179,8,0.5); }
+.voice-state-badge.executing{ background: rgba(168,85,247,0.18); color: #d8b4fe; border-color: rgba(168,85,247,0.5); }
+.voice-state-badge.idle     { background: rgba(100,116,139,0.18); color: #94a3b8; border-color: rgba(100,116,139,0.45); }
+.voice-subtitle {
+  background: rgba(99,102,241,0.10);
+  border-left: 3px solid #818cf8;
+  padding: 8px 10px; border-radius: 6px;
+  margin: 6px 0; font-size: 13px; line-height: 1.5;
+  min-height: 22px;
+  white-space: pre-wrap; word-break: break-word;
+}
+.voice-subtitle.empty { color: #64748b; font-style: italic; }
+.voice-stage {
+  margin: 6px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(244,63,94,0.10), rgba(251,146,60,0.10));
+  border-left: 3px solid #fb923c;
+  position: relative;
+  overflow: hidden;
+}
+.voice-stage::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, #f43f5e, #fb923c);
+  animation: voiceStagePulse 1.2s ease-in-out infinite;
+}
+@keyframes voiceStagePulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+.voice-stage-label {
+  font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+  color: #fb923c; margin-bottom: 4px; font-weight: 700;
+}
+.voice-stage-text {
+  font-size: 14px; line-height: 1.5; color: #fef3c7;
+  min-height: 20px;
+  font-family: -apple-system, 'PingFang SC', sans-serif;
+}
+.voice-stage-text .cursor {
+  display: inline-block; width: 6px; height: 14px;
+  background: #fb923c; vertical-align: middle;
+  margin-left: 2px;
+  animation: voiceStageCursor 0.8s steps(2) infinite;
+}
+@keyframes voiceStageCursor {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.voice-stage.partial .voice-stage-label { color: #fbbf24; }
+.voice-stage.final {
+  background: linear-gradient(135deg, rgba(34,197,94,0.10), rgba(16,185,129,0.10));
+  border-left-color: #22c55e;
+}
+.voice-stage.final::before {
+  background: linear-gradient(180deg, #22c55e, #10b981);
+  animation: none;
+}
+.voice-stage.final .voice-stage-label { color: #34d399; }
+.voice-reply {
+  margin-top: 6px; padding: 8px 10px; border-radius: 6px;
+  background: rgba(34,197,94,0.10);
+  border-left: 3px solid #22c55e;
+  color: #bbf7d0; font-size: 12px;
+}
+.voice-reply.error {
+  background: rgba(239,68,68,0.10);
+  border-left-color: #ef4444; color: #fca5a5;
+}
+.voice-log {
+  margin-top: 10px; max-height: 140px; overflow-y: auto;
+  font-family: 'SF Mono', Menlo, monospace; font-size: 11px; color: #94a3b8;
+}
+.voice-log-row { padding: 3px 0; border-bottom: 1px dashed rgba(148,163,184,0.15); }
+.voice-log-row:last-child { border-bottom: 0; }
+.voice-log-row .vw { color: #fbbf24; }
+.voice-log-row .vc { color: #c7d2fe; }
+.voice-config {
+  margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(148,163,184,0.18);
+  font-size: 11px; color: #94a3b8;
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
+.voice-source-toggle {
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(148,163,184,0.12);
+  display: flex; align-items: center; gap: 6px; font-size: 11px;
+}
+.voice-source-label { color: #94a3b8; white-space: nowrap; }
+.voice-source-btn {
+  padding: 4px 10px; border-radius: 6px; font-size: 11px;
+  border: 1px solid rgba(148,163,184,0.25); background: rgba(15,23,42,0.6);
+  color: #94a3b8; cursor: pointer; transition: all 0.2s;
+}
+.voice-source-btn:hover { border-color: rgba(99,102,241,0.5); color: #c7d2fe; }
+.voice-source-btn.active {
+  background: rgba(99,102,241,0.2); border-color: #818cf8;
+  color: #e0e7ff; font-weight: 600;
+}
+.voice-tts-hint {
+  font-size: 10px; color: #34d399; margin-left: auto;
+  background: rgba(16,185,129,0.12); padding: 2px 7px; border-radius: 4px;
+}
+.voice-config-tag {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  background: rgba(99,102,241,0.18); color: #c7d2fe; font-size: 11px;
+}
+.voice-config input[type="text"] {
+  flex: 1; min-width: 100px;
+  background: rgba(15,23,42,0.6); border: 1px solid rgba(148,163,184,0.25);
+  color: #e2e8f0; padding: 4px 8px; border-radius: 6px; font-size: 11px;
+}
+.voice-config button {
+  background: rgba(99,102,241,0.25); border: 1px solid rgba(99,102,241,0.4);
+  color: #c7d2fe; padding: 4px 10px; border-radius: 6px;
+  font-size: 11px; cursor: pointer;
+}
+.voice-config button:hover { background: rgba(99,102,241,0.4); }
+
+/* ============ Hero Environment Bar ============ */
+/* === Compact single-row env strip (override hero-env) === */
+.hero-env {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-bottom: 14px;
+  position: relative;
+  height: 52px;
+  background: linear-gradient(90deg, rgba(15,23,42,0.92) 0%, rgba(30,41,59,0.78) 100%);
+  border: 1px solid rgba(99,102,241,0.18);
+  border-radius: 12px;
+  padding: 0;
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+}
+.env-card {
+  background: transparent;
+  border: none;
+  border-left: 1px solid rgba(99,102,241,0.14);
+  border-radius: 0;
+  padding: 0 16px;
+  position: relative;
+  overflow: hidden;
+  backdrop-filter: none;
+  display: inline-flex; align-items: center; gap: 10px;
+  flex: 0 0 auto;
+  height: 100%;
+  transition: background .2s ease;
+  transform: none;
+}
+.env-card:first-child { border-left: none; padding-left: 18px; }
+.env-card:hover { transform: none; border-color: rgba(99,102,241,0.14); background: rgba(99,102,241,0.06); }
+.env-card::before { display: none; }
+.env-card-head {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; color: #94a3b8;
+  text-transform: none; letter-spacing: 0.3px;
+  margin-bottom: 0; line-height: 1;
+  white-space: nowrap;
+}
+.env-card-head .env-icon { font-size: 14px; }
+.env-pulse {
+  display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: #22d3ee; box-shadow: 0 0 0 0 rgba(34,211,238,.7);
+  animation: pulseRing 1.6s infinite;
+}
+@keyframes pulseRing {
+  0% { box-shadow: 0 0 0 0 rgba(34,211,238,.55); }
+  70% { box-shadow: 0 0 0 6px rgba(34,211,238,0); }
+  100% { box-shadow: 0 0 0 0 rgba(34,211,238,0); }
+}
+.env-value {
+  font-size: 18px; font-weight: 700; line-height: 1;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(135deg, #f1f5f9 0%, #cbd5e1 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  display: inline-flex; align-items: baseline; gap: 2px;
+  margin: 0;
+}
+.env-value .env-unit { font-size: 11px; color: #64748b; font-weight: 500; }
+.env-sub {
+  font-size: 10px; color: #64748b; line-height: 1;
+  white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 4px;
+  margin: 0;
+}
+.env-sub b { color: #cbd5e1; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* hide all decorative inner elements (rooms/spark/bar/wave/popover) — we kept the IDs in hidden divs so JS still works */
+.env-card .env-rooms,
+.env-card .env-spark,
+.env-card .env-bar,
+.env-card .env-wave,
+.env-card .env-popover { display: none !important; }
+
+/* Temperature accent — color the number itself */
+.env-card.env-temp.cold .env-value { background: linear-gradient(135deg, #7dd3fc 0%, #38bdf8 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.env-card.env-temp.warm .env-value { background: linear-gradient(135deg, #fdba74 0%, #fb923c 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.env-card.env-temp.hot  .env-value { background: linear-gradient(135deg, #fca5a5 0%, #ef4444 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+
+/* Inline marquee fills remaining space */
+.hero-env .env-marquee-inline {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex; align-items: center;
+  position: relative; overflow: hidden;
+  border-radius: 0;
+  border: none;
+  border-left: 1px solid rgba(99,102,241,0.14);
+  background: transparent;
+  padding: 0 14px;
+}
+.hero-env .env-marquee-inline::before {
+  content: ''; position: absolute; left: 14px; top: 0; bottom: 0; width: 24px;
+  background: linear-gradient(90deg, rgba(15,23,42,1) 0%, transparent 100%);
+  z-index: 2; pointer-events: none;
+}
+.hero-env .env-marquee-inline::after {
+  content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 32px;
+  background: linear-gradient(270deg, rgba(15,23,42,1) 0%, transparent 100%);
+  z-index: 2; pointer-events: none;
+}
+.hero-env .env-marquee-inline .marquee-tag {
+  flex: 0 0 auto; font-size: 9px; padding: 2px 6px; border-radius: 4px;
+  background: rgba(99,102,241,0.22); color: #c7d2fe;
+  letter-spacing: 1.2px; text-transform: uppercase; font-weight: 600;
+  margin-right: 10px;
+  white-space: nowrap;
+}
+.hero-env .env-marquee-inline .marquee-track {
+  display: inline-flex; gap: 22px;
+  white-space: nowrap;
+  animation: marqueeMove 40s linear infinite;
+  font-size: 12px; color: #e2e8f0; font-variant-numeric: tabular-nums;
+  flex: 1 1 auto;
+  will-change: transform;
+}
+.hero-env .env-marquee-inline .marquee-track:hover { animation-play-state: paused; }
+.hero-env .env-marquee-inline .marquee-item { display: inline-flex; align-items: center; gap: 4px; }
+.hero-env .env-marquee-inline .marquee-item .room { color: #94a3b8; font-size: 10px; }
+.hero-env .env-marquee-inline .marquee-item .val { font-weight: 600; }
+.hero-env .env-marquee-inline .marquee-item .sep { color: #475569; margin-left: 16px; }
+
+/* Hide any standalone (non-inline) marquee variants */
+.env-marquee:not(.env-marquee-inline) { display: none !important; }
+
+@keyframes marqueeMove { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+@media (max-width: 1100px) {
+  .hero-env { flex-wrap: wrap; height: auto; padding: 4px 0; }
+  .hero-env .env-card { padding: 6px 12px; height: 36px; }
+  .hero-env .env-marquee-inline { flex-basis: 100%; border-left: none; height: 28px; padding: 0 12px; }
+}
+@media (max-width: 600px) {
+  .hero-env { grid-template-columns: 1fr; }
+  .hero-env .env-card.env-temp { grid-column: span 1; }
+}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <div class="header-left">
+    <div class="logo">🏠</div>
+    <div>
+      <div class="header-title">AI 智能家居</div>
+      <div class="header-subtitle">视觉感知控制中心</div>
+    </div>
+  </div>
+  <div class="status-indicators">
+    <div class="status-dot" id="cameraStatus">摄像头</div>
+    <div class="status-dot" id="haStatus">智能中枢</div>
+    <div class="status-dot" id="aiStatus">AI 引擎</div>
+    <button id="rtspToggleBtn" class="voice-toggle" title="RTSP 摄像头地址" onclick="toggleRtspPanel()" style="margin-right:8px;">
+      <span class="voice-toggle-icon">📹</span>
+      <span class="voice-toggle-label" id="rtspToggleLabel">RTSP</span>
+    </button>
+    <button id="xiaoaiToggleBtn" class="voice-toggle" title="小爱播报设置" onclick="toggleXiaoaiPanel()" style="margin-right:8px;">
+      <span class="voice-toggle-icon">🔊</span>
+      <span class="voice-toggle-label" id="xiaoaiToggleLabel">小爱</span>
+    </button>
+    <button id="voiceToggleBtn" class="voice-toggle" title="语音控制" onclick="toggleVoice()">
+      <span class="voice-toggle-icon">🎤</span>
+      <span class="voice-toggle-label" id="voiceToggleLabel">语音 关</span>
+    </button>
+  </div>
+</header>
+
+<!-- Main Content -->
+<main class="main">
+
+  <!-- Hero Environment Strip (compact single-row, marquee inlined) -->
+  <div class="hero-env">
+    <div class="env-card env-temp" id="envTempCard">
+      <div class="env-card-head">
+        <span class="env-icon">🌡️</span><span>室温</span>
+        <span class="env-pulse"></span>
+      </div>
+      <div class="env-value"><span id="envTempVal">—</span><span class="env-unit">°C</span></div>
+      <div class="env-sub">低<b id="envTempMin">—</b>° 高<b id="envTempMax">—</b>° · <b id="envTempRoomCount">—</b>间</div>
+      <div class="env-rooms" id="envTempRooms"></div>
+    </div>
+
+    <div class="env-card env-hum">
+      <div class="env-card-head">
+        <span class="env-icon">💧</span><span>湿度</span>
+      </div>
+      <div class="env-value"><span id="envHumVal">—</span><span class="env-unit">%</span></div>
+      <div class="env-sub"><b id="envHumSamples">—</b> 路</div>
+      <div class="env-bar"><div class="env-bar-fill" id="envHumBar" style="width:0%;"></div></div>
+    </div>
+
+    <div class="env-card env-illum">
+      <div class="env-card-head">
+        <span class="env-icon">☀️</span><span>光照</span>
+      </div>
+      <div class="env-value"><span id="envIllumVal">—</span><span class="env-unit">lx</span></div>
+      <div class="env-sub">均 <b id="envIllumAvg">—</b></div>
+      <div class="env-spark">
+        <svg viewBox="0 0 200 32" preserveAspectRatio="none" id="envIllumSparkSvg" width="200" height="32">
+          <defs>
+            <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#facc15" stop-opacity=".6"/>
+              <stop offset="100%" stop-color="#facc15" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <path class="spark-fill" id="envIllumSparkFill" d=""/>
+          <path class="spark-line" id="envIllumSparkLine" d=""/>
+          <circle class="spark-dot" id="envIllumSparkDot" cx="200" cy="16" r="3"/>
+        </svg>
+      </div>
+    </div>
+
+    <div class="env-card env-occ">
+      <div class="env-card-head">
+        <span class="env-icon">👥</span><span>在场</span>
+      </div>
+      <div class="env-value"><span id="envOccVal">—</span><span class="env-unit">/<span id="envOccTotal">—</span></span></div>
+      <div class="env-sub">活跃</div>
+      <div class="env-bar"><div class="env-bar-fill" id="envOccBar" style="width:0%;"></div></div>
+    </div>
+
+    <div class="env-card env-clim">
+      <div class="env-card-head">
+        <span class="env-icon">❄️</span><span>空调</span>
+      </div>
+      <div class="env-value"><span id="envClimVal">—</span><span class="env-unit">台</span></div>
+      <div class="env-sub" id="envClimRunning"><span style="color:#64748b;">无</span></div>
+    </div>
+
+    <!-- Inline cross-room temperature marquee (fills remaining width) -->
+    <div class="env-marquee env-marquee-inline">
+      <div class="marquee-tag">LIVE</div>
+      <div class="marquee-track" id="envMarquee"><span style="color:#64748b;">加载中…</span></div>
+    </div>
+  </div>
+
+  <!-- Stats Bar -->
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="stat-value" id="statTotal">--</div>
+      <div class="stat-label">设备总数</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statOn">--</div>
+      <div class="stat-label">在线</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statPower">--</div>
+      <div class="stat-label">Power (W)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statTemp">--</div>
+      <div class="stat-label">光照</div>
+    </div>
+    <div class="stat-card stat-tokens" id="tokensCard" onclick="toggleTokenPanel()" title="点击查看明细">
+      <div class="stat-value"><span id="statTokens">0</span> <span class="stat-unit">tk</span></div>
+      <div class="stat-label">LLM Tokens · ¥<span id="statCost">0.00</span></div>
+    </div>
+    <div class="stat-card stat-rules" id="rulesCard" onclick="toggleRulesPanel()" title="自动化规则">
+      <div class="stat-value"><span id="statRulesActive">0</span><span class="stat-unit">/<span id="statRulesTotal">0</span></span></div>
+      <div class="stat-label">🤖 自动化规则 <span id="statAutoBadge" class="auto-badge auto-off">OFF</span></div>
+    </div>
+  </div>
+
+  <!-- LLM Token Usage Detail Panel (toggleable) -->
+  <div id="tokenPanel" class="token-panel" style="display:none">
+    <div class="token-panel-header">
+      <span>🎯 LLM Token 用量明细</span>
+      <span class="token-panel-close" onclick="toggleTokenPanel()">×</span>
+    </div>
+    <div class="token-summary" id="tokenSummary"></div>
+    <div class="token-section-title">按模型</div>
+    <div class="token-by-model" id="tokenByModel"></div>
+    <div class="token-section-title">按用途</div>
+    <div class="token-by-type" id="tokenByType"></div>
+    <div class="token-section-title">最近调用</div>
+    <div class="token-recent" id="tokenRecent"></div>
+  </div>
+
+  <!-- Automation Rules Panel (toggleable) -->
+  <div id="rulesPanelBackdrop" class="rules-panel-backdrop" onclick="toggleRulesPanel()"></div>
+  <div id="rulesPanel" class="rules-panel" style="display:none">
+    <div class="rules-panel-header">
+      <span>🤖 自动化规则</span>
+      <label class="auto-master">
+        <input type="checkbox" id="autoMasterToggle" onchange="toggleAutomation()"> 总开关
+      </label>
+      <span class="rules-panel-close" onclick="toggleRulesPanel()">×</span>
+    </div>
+
+    <div class="rules-tabs">
+      <button class="rules-tab-btn active" data-tab="list" onclick="switchRulesTab('list')">规则列表</button>
+      <button class="rules-tab-btn" data-tab="add" onclick="switchRulesTab('add')">＋ 添加</button>
+      <button class="rules-tab-btn" data-tab="history" onclick="switchRulesTab('history')">触发日志</button>
+    </div>
+
+    <!-- Tab: 规则列表 -->
+    <div class="rules-tab-pane active" id="rulesTabList">
+      <div id="rulesListBody" class="rules-list"></div>
+    </div>
+
+    <!-- Tab: 添加规则 -->
+    <div class="rules-tab-pane" id="rulesTabAdd">
+      <div class="rule-form">
+        <label>规则名称</label>
+        <input id="ruleName" placeholder="如：客厅有人开灯">
+
+        <label>触发源</label>
+        <div class="rule-trigger-row">
+          <label class="rule-radio"><input type="radio" name="ruleTrigger" value="vision" checked> 👁️ 画面</label>
+          <label class="rule-radio"><input type="radio" name="ruleTrigger" value="audio"> 🔊 声音</label>
+          <label class="rule-radio"><input type="radio" name="ruleTrigger" value="both"> 🔁 两者</label>
+        </div>
+
+        <label>条件（自然语言）</label>
+        <textarea id="ruleCondition" rows="2" placeholder="如：画面里有人在客厅活动 / 听到门铃声"></textarea>
+
+        <label>动作（自然语言）</label>
+        <textarea id="ruleAction" rows="2" placeholder="如：打开客厅灯 / 把空调调到26度"></textarea>
+
+        <div class="rule-form-row">
+          <div>
+            <label>冷却时间（秒）</label>
+            <input id="ruleCooldown" type="number" value="300" min="10">
+          </div>
+          <label class="rule-check">
+            <input id="ruleDryRun" type="checkbox" checked> 观察模式（不实际执行）
+          </label>
+        </div>
+
+        <button class="rule-save-btn" onclick="saveRule()">保存规则</button>
+        <div id="ruleFormHint" class="rule-form-hint"></div>
+      </div>
+    </div>
+
+    <!-- Tab: 触发日志 -->
+    <div class="rules-tab-pane" id="rulesTabHistory">
+      <div id="rulesHistoryBody" class="rules-history"></div>
+    </div>
+  </div>
+
+  <!-- Camera Feed -->
+  <div class="card camera-section">
+    <div class="card-header">
+      <div class="card-title"><span class="icon">📷</span> 实时画面</div>
+      <div class="card-badge" id="captureTime">--</div>
+    </div>
+    <div class="camera-feed" id="cameraFeed">
+      <img id="cameraImage" alt="摄像头画面" style="display:block; width:100%; height:100%; object-fit:cover;">
+      <div class="camera-placeholder" id="cameraPlaceholder" style="display:none; position:absolute; top:0; left:0; right:0; bottom:0; background:#111; display:flex; align-items:center; justify-content:center; color:#64748b; font-size:14px;">
+        📷 加载摄像头画面中...
+      </div>
+      <div class="overlay">
+        <div class="live-badge">● 直播</div>
+        <div class="timestamp" id="feedTimestamp">--:--:--</div>
+      </div>
+    </div>
+    <div class="camera-actions">
+      <button class="btn" onclick="refreshSnapshot()">🔄 刷新</button>
+      <button class="btn primary" onclick="triggerAnalysis()">🧠 AI 分析</button>
+    </div>
+  </div>
+
+  <!-- AI Analysis -->
+  <div class="card ai-section">
+    <div class="card-header">
+      <div class="card-title"><span class="icon">🧠</span> AI 场景分析</div>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <div class="card-badge" id="analysisSource" style="display:none; background:rgba(34,211,238,0.15); color:#22d3ee; border:1px solid rgba(34,211,238,0.3);">自动</div>
+        <div class="card-badge" id="analysisTime">等待中...</div>
+      </div>
+    </div>
+    <div class="analysis-content" id="analysisContent">
+      <div class="scene-description" id="sceneDesc">
+        等待首次分析... 点击「AI 分析」开始。
+      </div>
+      <div class="status-tags" id="statusTags"></div>
+      <div class="suggestions-list" id="suggestionsList"></div>
+    </div>
+  </div>
+
+  <!-- Natural Language Command -->
+  <div class="card command-section">
+    <div class="card-header">
+      <div class="card-title"><span class="icon">💬</span> 语音指令</div>
+      <div class="card-badge">NLP</div>
+    </div>
+    <div class="command-input-wrapper">
+      <input class="command-input" id="commandInput" 
+             placeholder="试试说... 如：打开客厅灯 / 我想看电影 / 客厅温度多少"
+             onkeydown="if(event.key==='Enter')sendCommand()">
+      <button class="btn primary" onclick="sendCommand()">发送</button>
+    </div>
+    <div class="command-response" id="commandResponse">
+      Try natural language commands to control your smart home devices.
+    </div>
+  </div>
+
+  <!-- Audio Transcription -->
+  <div class="card audio-section">
+    <div class="card-header">
+      <div class="card-title"><span class="icon">🎙️</span> 实时语音转写</div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <div class="card-badge" id="audioStatus">监听中...</div>
+        <button class="btn" onclick="triggerAudioCapture()" style="padding:4px 10px; font-size:11px;">🎤 采集</button>
+      </div>
+    </div>
+    <div class="transcript-feed" id="transcriptFeed">
+      <div class="transcript-empty">等待音频数据...</div>
+    </div>
+  </div>
+
+  <!-- Devices -->
+  <div class="card devices-section">
+    <div class="card-header">
+      <div class="card-title"><span class="icon">🏠</span> 设备控制</div>
+      <div class="card-badge" id="deviceCount">--</div>
+    </div>
+    <div class="device-toolbar">
+      <div class="device-search-box">
+        <input type="text" id="deviceSearch" placeholder="搜索设备..." oninput="onDeviceSearch(this.value)">
+      </div>
+      <div class="device-type-filters" id="typeFilters"></div>
+    </div>
+    <div class="room-tabs" id="roomTabs">
+      <div class="room-tab active" data-room="all">全部</div>
+    </div>
+    <div class="devices-grid" id="devicesGrid"></div>
+  </div>
+</main>
+
+<script>
+// ============ State ============
+let devices = [];
+let currentRoom = 'all';
+let currentType = 'all';
+let searchQuery = '';
+let analysisData = null;
+
+// Device type classification with Chinese labels
+const DEVICE_TYPES = {
+  lighting:  { icon: '💡', label: '灯光', domains: ['light'], nameFilter: n => !n.includes('指示灯') && !n.includes('indicator') },
+  curtain:   { icon: '🪟', label: '窗帘', domains: ['cover'], nameFilter: n => n.includes('窗帘') || n.includes('纱帘') },
+  airer:     { icon: '👔', label: '晾衣架', domains: ['cover'], nameFilter: n => n.includes('晾衣架') || n.includes('毛巾架') },
+  climate:   { icon: '❄️', label: '空调', domains: ['climate'] },
+  plug:      { icon: '🔌', label: '插座', domains: ['switch'], nameFilter: n => n.includes('插座') && n.includes('开关') },
+  wallswitch:{ icon: '🔲', label: '墙壁开关', domains: ['switch'], nameFilter: n => (n.includes('键') || n.includes('开关')) && !n.includes('插座') && !n.includes('童锁') && !n.includes('物理控制锁') && !n.includes('防闪烁') && !n.includes('指示灯') && !n.includes('静音') && !n.includes('睡眠') && !n.includes('自动') && !n.includes('电机反向') && !n.includes('UV') && !n.includes('提示音') && !n.includes('警戒') && !n.includes('录像') && !n.includes('人脸') },
+  fan:       { icon: '🌀', label: '风扇', domains: ['fan'] },
+  media:     { icon: '📺', label: '影音', domains: ['media_player'] },
+  vacuum:    { icon: '🤖', label: '扫地机', domains: ['vacuum'] },
+};
+
+const ROOM_KEYWORDS = {
+  '客厅': 'living_room', '主卧': 'master_bedroom', '次卧': 'second_bedroom',
+  '北卧': 'north_bedroom', '书房': 'study', '厨房': 'kitchen',
+  '阳台': 'balcony', '走廊': 'hallway', '主卫': 'master_bath',
+  '公卫': 'public_bath', '北卫': 'north_bath', '餐厅': 'dining', '玄关': 'entrance'
+};
+
+const ROOM_LABELS = {
+  'all': '全部', 'living_room': '客厅', 'master_bedroom': '主卧',
+  'second_bedroom': '次卧', 'north_bedroom': '北卧', 'study': '书房',
+  'kitchen': '厨房', 'balcony': '阳台', 'hallway': '走廊',
+  'master_bath': '主卫', 'public_bath': '公卫', 'north_bath': '北卫',
+  'dining': '餐厅', 'entrance': '玄关', 'other': '其他'
+};
+
+// ============ API Helpers ============
+async function api(path, options = {}) {
+  try {
+    const res = await fetch(path, options);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    console.error(`API ${path} failed:`, e);
+    return null;
+  }
+}
+
+// ============ Camera ============
+let snapshotTimer = null;
+// 默认值，初始化时会被 /api/stream/profile 推荐覆盖
+let useStreamMode = false;
+let snapshotIntervalMs = 3000;
+let cameraProfile = null;
+
+async function loadCameraProfile() {
+  try {
+    const r = await fetch('/api/stream/profile');
+    if (!r.ok) return;
+    cameraProfile = await r.json();
+    snapshotIntervalMs = Math.max(500, cameraProfile.recommendedSnapshotIntervalMs || 2000);
+    useStreamMode = (cameraProfile.recommendedMode === 'stream');
+    console.log(`[Camera] profile: ${cameraProfile.codec} ${cameraProfile.width}x${cameraProfile.height}@${cameraProfile.fps}fps → ${cameraProfile.recommendedMode} (${cameraProfile.reason})`);
+    // 反映到 UI
+    const el = document.getElementById('feedTimestamp');
+    if (el && cameraProfile.codec) {
+      const modeLabel = cameraProfile.recommendedMode === 'stream' ? '实时流' : '快照轮询';
+      el.title = `${cameraProfile.codec.toUpperCase()} ${cameraProfile.width}×${cameraProfile.height} @${cameraProfile.fps}fps · ${modeLabel} · ${cameraProfile.reason}`;
+    }
+  } catch (e) {
+    console.warn('[Camera] profile fetch failed', e);
+  }
+}
+
+function startLiveStream() {
+  // 由 profile 决定 mode；没拿到 profile 时默认 snapshot 兜底
+  if (useStreamMode) {
+    startStreamMode();
+  } else {
+    startSnapshotPolling();
+  }
+}
+
+function startStreamMode() {
+  const img = document.getElementById('cameraImage');
+  const placeholder = document.getElementById('cameraPlaceholder');
+  if (!img) return;
+  img.onload = () => {
+    img.style.display = 'block';
+    if (placeholder) placeholder.style.display = 'none';
+    document.getElementById('feedTimestamp').textContent = new Date().toLocaleTimeString() + ' • 直播';
+    document.getElementById('cameraStatus').classList.remove('offline');
+  };
+  img.onerror = () => {
+    console.warn('[Camera] stream errored — fallback to snapshot polling');
+    useStreamMode = false;
+    img.onerror = null; img.onload = null;
+    startSnapshotPolling();
+  };
+  img.src = `/api/stream?t=${Date.now()}`;
+  if (snapshotTimer) clearInterval(snapshotTimer);
+  snapshotTimer = null;
+  // MJPEG is one long-lived HTTP response. Reassigning src on a timer creates
+  // overlapping RTSP/ffmpeg sessions because <img>.onload is not a per-frame
+  // heartbeat for multipart streams. Network failures are handled by onerror;
+  // users can explicitly reconnect with the refresh button.
+}
+
+function refreshSnapshot() {
+  if (useStreamMode) {
+    const img = document.getElementById('cameraImage');
+    if (img) img.src = `/api/stream?t=${Date.now()}`;
+    return;
+  }
+  const img = document.getElementById('cameraImage');
+  const placeholder = document.getElementById('cameraPlaceholder');
+  const testImg = new Image();
+  testImg.onload = () => {
+    img.src = testImg.src;
+    img.style.display = 'block';
+    if (placeholder) placeholder.style.display = 'none';
+    document.getElementById('feedTimestamp').textContent = new Date().toLocaleTimeString() + ' • 快照轮询';
+    document.getElementById('cameraStatus').classList.remove('offline');
+  };
+  testImg.onerror = () => {
+    document.getElementById('cameraStatus').classList.add('offline');
+  };
+  testImg.src = `/api/snapshot?t=${Date.now()}`;
+}
+
+function startSnapshotPolling() {
+  useStreamMode = false;
+  refreshSnapshot();
+  if (snapshotTimer) clearInterval(snapshotTimer);
+  snapshotTimer = setInterval(refreshSnapshot, snapshotIntervalMs);
+}
+
+function refreshSnapshot_OLD_DUPLICATE_REMOVED() {
+  if (useStreamMode) {
+    // Force-restart MJPEG stream (manual refresh)
+    const img = document.getElementById('cameraImage');
+    if (img) img.src = `/api/stream?t=${Date.now()}`;
+    return;
+  }
+  const img = document.getElementById('cameraImage');
+  const placeholder = document.getElementById('cameraPlaceholder');
+  const testImg = new Image();
+  testImg.onload = () => {
+    img.src = testImg.src;
+    img.style.display = 'block';
+    if (placeholder) placeholder.style.display = 'none';
+    document.getElementById('feedTimestamp').textContent = new Date().toLocaleTimeString();
+    document.getElementById('cameraStatus').classList.remove('offline');
+  };
+  testImg.onerror = () => {
+    // snapshot not ready yet, keep current frame
+  };
+  testImg.src = `/api/snapshot?t=${Date.now()}`;
+}
+function startSnapshotPolling_OLD_DUPLICATE_REMOVED() {
+  refreshSnapshot();
+  if (snapshotTimer) clearInterval(snapshotTimer);
+  snapshotTimer = setInterval(refreshSnapshot, 3000);
+}
+
+// ============ AI Analysis ============
+async function triggerAnalysis() {
+  const badge = document.getElementById('analysisTime');
+  badge.textContent = '分析中...';
+  document.getElementById('sceneDesc').innerHTML = '<div class="spinner"></div> AI is analyzing the scene...';
+  
+  // First capture fresh frame
+  await api('/api/capture', { method: 'POST' });
+  await new Promise(r => setTimeout(r, 2000));
+  
+  const result = await api('/api/analyze', { method: 'POST' });
+  if (result) {
+    renderAnalysis(result, 'manual');
+  } else {
+    document.getElementById('sceneDesc').textContent = '分析失败，请重试。';
+    badge.textContent = '错误';
+  }
+}
+
+function renderAnalysis(data, source) {
+  analysisData = data;
+  const badge = document.getElementById('analysisTime');
+  const srcBadge = document.getElementById('analysisSource');
+  badge.textContent = new Date(data.timestamp).toLocaleTimeString();
+  if (srcBadge) {
+    if (source === 'auto') {
+      srcBadge.textContent = '⏱ 自动';
+      srcBadge.style.display = 'inline-block';
+      srcBadge.style.background = 'rgba(34,211,238,0.15)';
+      srcBadge.style.color = '#22d3ee';
+      srcBadge.style.borderColor = 'rgba(34,211,238,0.3)';
+    } else if (source === 'manual') {
+      srcBadge.textContent = '👆 手动';
+      srcBadge.style.display = 'inline-block';
+      srcBadge.style.background = 'rgba(168,85,247,0.15)';
+      srcBadge.style.color = '#a855f7';
+      srcBadge.style.borderColor = 'rgba(168,85,247,0.3)';
+    }
+  }
+  
+  const parsed = data.parsed;
+  if (parsed) {
+    // Scene description
+    document.getElementById('sceneDesc').textContent = parsed.scene || data.text;
+    
+    // Status tags
+    const tagsEl = document.getElementById('statusTags');
+    const statuses = parsed.status || [];
+    tagsEl.innerHTML = statuses.map(s => `<span class="status-tag">${s}</span>`).join('');
+    
+    // Brightness & occupancy tags
+    if (parsed.brightness) {
+      tagsEl.innerHTML += `<span class="status-tag">🌓 ${parsed.brightness}</span>`;
+    }
+    if (parsed.occupied !== undefined) {
+      tagsEl.innerHTML += `<span class="status-tag">${parsed.occupied ? '👤 Occupied' : '🚫 Empty'}</span>`;
+    }
+    
+    // Suggestions
+    const sugEl = document.getElementById('suggestionsList');
+    const suggestions = parsed.suggestions || [];
+    sugEl.innerHTML = suggestions.map((s, i) => `
+      <div class="suggestion-item" onclick="executeSuggestion(${i})">
+        <span class="text">${s.icon || '💡'} ${s.action}</span>
+        <button class="execute-btn">执行</button>
+      </div>
+    `).join('');
+  } else {
+    document.getElementById('sceneDesc').textContent = data.text || 'No analysis data';
+    document.getElementById('statusTags').innerHTML = '';
+    document.getElementById('suggestionsList').innerHTML = '';
+  }
+}
+
+async function executeSuggestion(index) {
+  if (!analysisData?.parsed?.suggestions?.[index]) return;
+  const suggestion = analysisData.parsed.suggestions[index];
+  const result = await api('/api/execute-suggestion', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: suggestion.action, domain: suggestion.domain })
+  });
+  if (result?.executed?.length > 0) {
+    showCommandResponse(`✅ 已执行：${suggestion.action}（${result.executed.length} 个设备）`);
+    setTimeout(loadDevices, 1000);
+  } else {
+    showCommandResponse(`⚠️ ${result?.reply || 'Could not execute suggestion'}`);
+  }
+}
+
+// ============ Natural Language Command ============
+async function sendCommand() {
+  const input = document.getElementById('commandInput');
+  const command = input.value.trim();
+  if (!command) return;
+  
+  showCommandResponse('<div class="spinner"></div> Processing...');
+  input.value = '';
+  
+  const result = await api('/api/command', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command })
+  });
+  
+  if (result) {
+    let msg = result.reply || 'Done';
+    if (result.executed?.length > 0) {
+      msg += ` (${result.executed.length} devices controlled)`;
+    }
+    showCommandResponse(result.understood ? `✅ ${msg}` : `💬 ${msg}`);
+    if (result.executed?.length > 0) {
+      setTimeout(loadDevices, 1000);
+    }
+  } else {
+    showCommandResponse('❌ Command failed. Check server connection.');
+  }
+}
+
+function showCommandResponse(html) {
+  const el = document.getElementById('commandResponse');
+  el.innerHTML = html;
+  el.classList.add('active');
+}
+
+// ============ Devices ============
+function classifyDevice(entity) {
+  const domain = entity.entity_id.split('.')[0];
+  const name = entity.attributes?.friendly_name || '';
+  for (const [typeKey, typeDef] of Object.entries(DEVICE_TYPES)) {
+    if (!typeDef.domains.includes(domain)) continue;
+    if (typeDef.nameFilter && !typeDef.nameFilter(name)) continue;
+    return typeKey;
+  }
+  return null; // not a user-facing device
+}
+
+function shortenName(name) {
+  return name
+    .replace(/\s*(窗帘电机|晾衣架|开关\s*开关|开关$|灯$|指示灯|物理控制锁.*|风扇$|音箱$)/g, '')
+    .replace(/\s*(左键|右键|中键|左|右|中)$/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^\s+|\s+$/g, '')
+    .replace(/^(.*?)\s+\1$/, '$1') // deduplicate "xxx  xxx"
+    || name;
+}
+
+function getDeviceSubtext(device, entity) {
+  if (device.type === 'climate') {
+    const temp = entity.attributes?.temperature;
+    const mode = entity.attributes?.hvac_mode || entity.state;
+    if (device.state === 'off') return '已关闭';
+    const modeMap = { cool: '制冷', heat: '制热', auto: '自动', dry: '除湿', fan_only: '送风' };
+    return `${modeMap[mode] || mode} ${temp ? temp + '°C' : ''}`;
+  }
+  if (device.type === 'curtain' || device.type === 'airer') {
+    const pos = entity.attributes?.current_position;
+    if (pos !== undefined && pos !== null) return `${pos}%`;
+    return device.state === 'open' ? '已打开' : '已关闭';
+  }
+  if (device.type === 'media') {
+    if (device.state === 'playing') return '播放中';
+    if (device.state === 'paused') return '已暂停';
+    if (device.state === 'idle') return '空闲';
+    return '关闭';
+  }
+  if (device.type === 'vacuum') {
+    const statusMap = { cleaning: '清扫中', returning: '回充中', docked: '充电中', idle: '待机' };
+    return statusMap[device.state] || device.state;
+  }
+  return ['on', 'open'].includes(device.state) ? '已开启' : '已关闭';
+}
+
+async function loadDevices() {
+  const states = await api('/api/ha/states');
+  if (!states || !Array.isArray(states)) {
+    document.getElementById('haStatus')?.classList.add('offline');
+    return;
+  }
+  document.getElementById('haStatus')?.classList.remove('offline');
+
+  devices = [];
+  const rawEntities = new Map(); // entity_id → raw state for subtext
+
+  for (const entity of states) {
+    if (entity.state === 'unavailable') continue;
+    const type = classifyDevice(entity);
+    if (!type) continue;
+    const name = entity.attributes?.friendly_name || entity.entity_id;
+    devices.push({
+      entity_id: entity.entity_id,
+      domain: entity.entity_id.split('.')[0],
+      type,
+      name,
+      shortName: shortenName(name),
+      state: entity.state,
+      room: detectRoom(name)
+    });
+    rawEntities.set(entity.entity_id, entity);
+  }
+
+  // Store for subtext lookup
+  window._rawEntities = rawEntities;
+
+  // Stats
+  const totalOn = devices.filter(d => ['on', 'open', 'playing', 'cleaning'].includes(d.state)).length;
+  document.getElementById('statTotal').textContent = devices.length;
+  document.getElementById('statOn').textContent = totalOn;
+  document.getElementById('deviceCount').textContent = `${devices.length} 设备`;
+
+  // Power & illuminance
+  let totalPower = 0, illuminance = '--';
+  states.forEach(e => {
+    const dc = e.attributes?.device_class;
+    if (dc === 'power' && e.state !== 'unavailable') totalPower += parseFloat(e.state) || 0;
+    if (dc === 'illuminance' && (e.attributes?.friendly_name || '').includes('客厅')) {
+      illuminance = e.state + (e.attributes?.unit_of_measurement || '');
+    }
+  });
+  document.getElementById('statPower').textContent = Math.round(totalPower);
+  document.getElementById('statTemp').textContent = illuminance;
+
+  renderTypeFilters();
+  renderRoomTabs();
+  renderDevices();
+}
+
+function detectRoom(name) {
+  for (const [keyword, room] of Object.entries(ROOM_KEYWORDS)) {
+    if (name.includes(keyword)) return room;
+  }
+  return 'other';
+}
+
+function renderTypeFilters() {
+  const counts = { all: devices.length };
+  devices.forEach(d => { counts[d.type] = (counts[d.type] || 0) + 1; });
+  const container = document.getElementById('typeFilters');
+  let html = `<span class="type-filter-btn ${currentType === 'all' ? 'active' : ''}" onclick="setTypeFilter('all')">全部 ${counts.all}</span>`;
+  for (const [key, def] of Object.entries(DEVICE_TYPES)) {
+    if (!counts[key]) continue;
+    html += `<span class="type-filter-btn ${currentType === key ? 'active' : ''}" onclick="setTypeFilter('${key}')">${def.icon} ${def.label} ${counts[key]}</span>`;
+  }
+  container.innerHTML = html;
+}
+
+function setTypeFilter(type) {
+  currentType = type;
+  renderTypeFilters();
+  renderDevices();
+}
+
+function onDeviceSearch(query) {
+  searchQuery = query.trim().toLowerCase();
+  renderDevices();
+}
+
+function renderRoomTabs() {
+  const rooms = new Map();
+  rooms.set('all', 0);
+  const filtered = currentType === 'all' ? devices : devices.filter(d => d.type === currentType);
+  filtered.forEach(d => {
+    rooms.set(d.room, (rooms.get(d.room) || 0) + 1);
+  });
+
+  const tabsEl = document.getElementById('roomTabs');
+  let html = '';
+  rooms.forEach((count, key) => {
+    if (count === 0 && key !== 'all') return;
+    const label = ROOM_LABELS[key] || key;
+    const total = key === 'all' ? filtered.length : count;
+    html += `<div class="room-tab ${key === currentRoom ? 'active' : ''}" onclick="setRoom('${key}')">${label} ${total}</div>`;
+  });
+  tabsEl.innerHTML = html;
+}
+
+function setRoom(room) {
+  currentRoom = room;
+  renderRoomTabs();
+  renderDevices();
+}
+
+function renderDevices() {
+  let filtered = devices;
+  if (currentType !== 'all') filtered = filtered.filter(d => d.type === currentType);
+  if (currentRoom !== 'all') filtered = filtered.filter(d => d.room === currentRoom);
+  if (searchQuery) {
+    filtered = filtered.filter(d =>
+      d.name.toLowerCase().includes(searchQuery) ||
+      d.shortName.toLowerCase().includes(searchQuery) ||
+      d.entity_id.toLowerCase().includes(searchQuery)
+    );
+  }
+
+  const grid = document.getElementById('devicesGrid');
+  if (filtered.length === 0) {
+    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:30px;font-size:13px;">没有匹配的设备</div>';
+    return;
+  }
+
+  grid.innerHTML = filtered.map(d => buildRichCard(d)).join('');
+}
+
+function buildRichCard(d) {
+  const isOn = ['on', 'open', 'playing', 'cleaning'].includes(d.state);
+  const typeDef = DEVICE_TYPES[d.type] || {};
+  const icon = typeDef.icon || '📦';
+  const entity = window._rawEntities?.get(d.entity_id);
+  const attrs = entity?.attributes || {};
+
+  // Climate (空调)
+  if (d.type === 'climate') {
+    const curTemp = attrs.current_temperature;
+    const targetTemp = attrs.temperature || 26;
+    const climateOn = d.state !== 'off';
+    const mode = climateOn ? (d.state || 'cool') : 'off';
+    const modeMap = { cool: '❄️制冷', heat: '🔥制热', auto: '🔄自动', dry: '💧除湿', fan_only: '💨送风', off: '关闭' };
+    const modeLabel = { cool: '制冷', heat: '制热', auto: '自动', dry: '除湿', fan_only: '送风' };
+    const fanMode = attrs.fan_mode || '';
+    const hvacModes = (attrs.hvac_modes || []).filter(m => m !== 'off');
+    const fanModes = attrs.fan_modes || [];
+    return `
+      <div class="device-card rich ${climateOn ? 'on' : ''}" title="${d.name}">
+        <div class="device-card-top">
+          <span class="device-icon">${icon}</span>
+          <span class="device-toggle ${climateOn ? 'on' : ''}" onclick="toggleDevice('${d.entity_id}','${d.domain}','${d.state}');event.stopPropagation()"></span>
+        </div>
+        <div class="device-name">${d.shortName}</div>
+        <div class="device-controls">
+          <div class="climate-info">
+            <span class="climate-current-temp">${curTemp !== null && curTemp !== undefined ? curTemp : '--'}</span>
+            <span class="climate-unit">°C</span>
+            ${climateOn ? `<span class="climate-target">${modeMap[mode] || mode}</span>` : '<span class="climate-target">已关闭</span>'}
+          </div>
+          ${climateOn ? `
+          <div class="climate-temp-ctrl">
+            <button class="climate-temp-btn" onclick="adjustClimate('${d.entity_id}',${targetTemp - 1});event.stopPropagation()">−</button>
+            <span class="climate-temp-val">${targetTemp}°</span>
+            <button class="climate-temp-btn" onclick="adjustClimate('${d.entity_id}',${targetTemp + 1});event.stopPropagation()">+</button>
+            <span class="climate-fan">${fanMode}</span>
+          </div>
+          <div class="climate-mode-row">
+            ${hvacModes.map(m => `<button class="climate-mode-btn ${m === mode ? 'active' : ''}" onclick="setClimateMode('${d.entity_id}','${m}');event.stopPropagation()">${modeLabel[m] || m}</button>`).join('')}
+          </div>
+          ${fanModes.length ? `<div class="climate-mode-row">
+            ${fanModes.map(f => `<button class="climate-mode-btn ${f === fanMode ? 'active' : ''}" onclick="setClimateFan('${d.entity_id}','${f}');event.stopPropagation()">${f}</button>`).join('')}
+          </div>` : ''}
+          ` : ''}
+        </div>
+      </div>`;
+  }
+
+  // Cover (窗帘)
+  if (d.type === 'curtain') {
+    const pos = attrs.current_position;
+    const hasPos = pos !== undefined && pos !== null;
+    const displayPos = hasPos ? pos : (d.state === 'open' ? 100 : 0);
+    return `
+      <div class="device-card rich ${isOn ? 'on' : ''}" title="${d.name}">
+        <div class="device-card-top">
+          <span class="device-icon">${icon}</span>
+          <span class="device-toggle ${isOn ? 'on' : ''}" onclick="toggleDevice('${d.entity_id}','${d.domain}','${d.state}');event.stopPropagation()"></span>
+        </div>
+        <div class="device-name">${d.shortName}</div>
+        <div class="device-controls">
+          <div class="cover-visual">
+            <div class="cover-fill" style="width:${displayPos}%"></div>
+            <div class="cover-percent">${displayPos}%</div>
+          </div>
+          <div class="cover-btns">
+            <button class="cover-btn" onclick="coverControl('${d.entity_id}','open');event.stopPropagation()">开</button>
+            <button class="cover-btn" onclick="coverControl('${d.entity_id}','stop');event.stopPropagation()">停</button>
+            <button class="cover-btn" onclick="coverControl('${d.entity_id}','close');event.stopPropagation()">关</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // Airer (晾衣架)
+  if (d.type === 'airer') {
+    const pos = attrs.current_position;
+    const hasPos = pos !== undefined && pos !== null;
+    const displayPos = hasPos ? pos : (d.state === 'open' ? 100 : 0);
+    return `
+      <div class="device-card rich ${isOn ? 'on' : ''}" title="${d.name}">
+        <div class="device-card-top">
+          <span class="device-icon">${icon}</span>
+          <span class="device-toggle ${isOn ? 'on' : ''}" onclick="toggleDevice('${d.entity_id}','${d.domain}','${d.state}');event.stopPropagation()"></span>
+        </div>
+        <div class="device-name">${d.shortName}</div>
+        <div class="device-controls">
+          <div class="cover-visual">
+            <div class="cover-fill" style="width:${displayPos}%"></div>
+            <div class="cover-percent">${displayPos}%</div>
+          </div>
+          <div class="cover-btns">
+            <button class="cover-btn" onclick="coverControl('${d.entity_id}','open');event.stopPropagation()">升</button>
+            <button class="cover-btn" onclick="coverControl('${d.entity_id}','stop');event.stopPropagation()">停</button>
+            <button class="cover-btn" onclick="coverControl('${d.entity_id}','close');event.stopPropagation()">降</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // Light with brightness
+  if (d.type === 'light') {
+    const hasBrightness = attrs.supported_color_modes && !attrs.supported_color_modes.every(m => m === 'onoff');
+    const brightness = attrs.brightness;
+    const pct = brightness ? Math.round(brightness / 255 * 100) : 0;
+    const colorTemp = attrs.color_temp_kelvin;
+    if (hasBrightness && isOn) {
+      return `
+        <div class="device-card rich ${isOn ? 'on' : ''}" title="${d.name}">
+          <div class="device-card-top">
+            <span class="device-icon">${icon}</span>
+            <span class="device-toggle ${isOn ? 'on' : ''}" onclick="toggleDevice('${d.entity_id}','${d.domain}','${d.state}');event.stopPropagation()"></span>
+          </div>
+          <div class="device-name">${d.shortName}</div>
+          <div class="device-controls">
+            <div class="light-brightness">
+              <div class="light-bar-wrap" onclick="setLightBrightness(event,'${d.entity_id}');event.stopPropagation()">
+                <div class="light-bar-fill" style="width:${pct}%"></div>
+              </div>
+              <span class="light-bar-val">${pct}%</span>
+            </div>
+            ${colorTemp ? `<div class="light-color-temp">色温 ${colorTemp}K</div>` : ''}
+          </div>
+        </div>`;
+    }
+    // Simple on/off light - fall through to default
+  }
+
+  // Fan (风扇)
+  if (d.type === 'fan') {
+    const pct = attrs.percentage || 0;
+    const step = attrs.percentage_step || 25;
+    const levels = Math.round(100 / step);
+    const currentLevel = Math.round(pct / step);
+    const presetModes = attrs.preset_modes || [];
+    const osc = attrs.oscillating;
+    return `
+      <div class="device-card rich ${isOn ? 'on' : ''}" title="${d.name}">
+        <div class="device-card-top">
+          <span class="device-icon">${icon}</span>
+          <span class="device-toggle ${isOn ? 'on' : ''}" onclick="toggleDevice('${d.entity_id}','${d.domain}','${d.state}');event.stopPropagation()"></span>
+        </div>
+        <div class="device-name">${d.shortName}</div>
+        <div class="device-controls">
+          <div class="fan-info">
+            <div class="fan-speed-dots">
+              ${Array.from({length: levels}, (_, i) => `<span class="fan-speed-dot ${i < currentLevel ? 'active' : ''}"></span>`).join('')}
+            </div>
+            ${isOn && presetModes.length ? `<span class="fan-mode">${presetModes[0]}</span>` : ''}
+          </div>
+          ${osc !== undefined ? `<span class="fan-osc">${osc ? '◎ 摆头' : '○ 固定'}</span>` : ''}
+          ${isOn ? `<div class="device-subtext">档位 ${currentLevel}/${levels} · ${pct}%</div>` : '<div class="device-subtext">已关闭</div>'}
+        </div>
+      </div>`;
+  }
+
+  // Media player (影音)
+  if (d.type === 'media') {
+    const vol = attrs.volume_level;
+    const volPct = vol !== undefined ? Math.round(vol * 100) : null;
+    const muted = attrs.is_volume_muted;
+    const stateIcon = d.state === 'playing' ? '▶' : d.state === 'paused' ? '⏸' : d.state === 'idle' ? '⏹' : '⏻';
+    const stateText = d.state === 'playing' ? '播放中' : d.state === 'paused' ? '已暂停' : d.state === 'idle' ? '空闲' : '关闭';
+    return `
+      <div class="device-card rich ${isOn ? 'on' : ''}" title="${d.name}">
+        <div class="device-card-top">
+          <span class="device-icon">${icon}</span>
+          <span class="media-state-icon">${stateIcon}</span>
+        </div>
+        <div class="device-name">${d.shortName}</div>
+        <div class="device-controls">
+          <div class="device-subtext">${stateText}${muted ? ' · 静音' : ''}</div>
+          ${volPct !== null ? `
+          <div class="media-info">
+            <div class="media-vol-bar">
+              <div class="media-vol-fill" style="width:${volPct}%"></div>
+            </div>
+            <span class="media-vol-val">${volPct}%</span>
+          </div>` : ''}
+        </div>
+      </div>`;
+  }
+
+  // Vacuum (扫地机)
+  if (d.type === 'vacuum') {
+    const statusMap = { cleaning: '🔄 清扫中', returning: '🔙 回充中', docked: '🔋 充电中', idle: '💤 待机', paused: '⏸ 暂停' };
+    return `
+      <div class="device-card rich ${isOn ? 'on' : ''}" title="${d.name}">
+        <div class="device-card-top">
+          <span class="device-icon">${icon}</span>
+          <span class="device-toggle ${isOn ? 'on' : ''}" onclick="toggleDevice('${d.entity_id}','${d.domain}','${d.state}');event.stopPropagation()"></span>
+        </div>
+        <div class="device-name">${d.shortName}</div>
+        <div class="device-controls">
+          <div class="device-subtext">${statusMap[d.state] || d.state}</div>
+          <div class="vacuum-btns">
+            <button class="vacuum-btn" onclick="vacuumCommand('${d.entity_id}','start');event.stopPropagation()">清扫</button>
+            <button class="vacuum-btn" onclick="vacuumCommand('${d.entity_id}','return_to_base');event.stopPropagation()">回充</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // Default (simple toggle) - switches, wall_switch, socket, generic light
+  const subtext = entity ? getDeviceSubtext(d, entity) : (isOn ? '已开启' : '已关闭');
+  return `
+    <div class="device-card ${isOn ? 'on' : ''}" onclick="toggleDevice('${d.entity_id}', '${d.domain}', '${d.state}')" title="${d.name}">
+      <div class="device-card-top">
+        <span class="device-icon">${icon}</span>
+        <span class="device-toggle ${isOn ? 'on' : ''}"></span>
+      </div>
+      <div class="device-name">${d.shortName}</div>
+      <div class="device-subtext">${subtext}</div>
+    </div>
+  `;
+}
+
+async function toggleDevice(entityId, domain, currentState) {
+  let service;
+  if (domain === 'cover') {
+    service = currentState === 'open' ? 'close_cover' : 'open_cover';
+  } else if (domain === 'climate') {
+    service = currentState === 'off' ? 'turn_on' : 'turn_off';
+  } else {
+    service = ['on', 'open'].includes(currentState) ? 'turn_off' : 'turn_on';
+  }
+  
+  await api(`/api/ha/services/${domain}/${service}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_id: entityId })
+  });
+  
+  // Optimistic update - both device and raw entity
+  const device = devices.find(d => d.entity_id === entityId);
+  const entity = window._rawEntities?.get(entityId);
+  if (device) {
+    if (domain === 'cover') {
+      device.state = currentState === 'open' ? 'closed' : 'open';
+      if (entity) entity.state = device.state;
+    } else if (domain === 'climate') {
+      device.state = currentState === 'off' ? 'cool' : 'off';
+      if (entity) entity.state = device.state;
+    } else {
+      device.state = ['on', 'open'].includes(currentState) ? 'off' : 'on';
+      if (entity) entity.state = device.state;
+    }
+    renderDevices();
+  }
+  
+  setTimeout(loadDevices, 2000);
+}
+
+// Rich control actions
+async function adjustClimate(entityId, temp) {
+  temp = Math.max(16, Math.min(32, temp));
+  await api(`/api/ha/services/climate/set_temperature`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_id: entityId, temperature: temp })
+  });
+  // Update local entity cache for instant feedback
+  const entity = window._rawEntities?.get(entityId);
+  if (entity) entity.attributes.temperature = temp;
+  renderDevices();
+  setTimeout(loadDevices, 2000);
+}
+
+async function setClimateMode(entityId, mode) {
+  await api(`/api/ha/services/climate/set_hvac_mode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_id: entityId, hvac_mode: mode })
+  });
+  const entity = window._rawEntities?.get(entityId);
+  if (entity) entity.state = mode;
+  const device = devices.find(d => d.entity_id === entityId);
+  if (device) device.state = mode;
+  renderDevices();
+  setTimeout(loadDevices, 2000);
+}
+
+async function setClimateFan(entityId, fanMode) {
+  await api(`/api/ha/services/climate/set_fan_mode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_id: entityId, fan_mode: fanMode })
+  });
+  const entity = window._rawEntities?.get(entityId);
+  if (entity) entity.attributes.fan_mode = fanMode;
+  renderDevices();
+  setTimeout(loadDevices, 2000);
+}
+
+async function coverControl(entityId, action) {
+  const serviceMap = { open: 'open_cover', close: 'close_cover', stop: 'stop_cover' };
+  await api(`/api/ha/services/cover/${serviceMap[action]}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_id: entityId })
+  });
+  setTimeout(loadDevices, 2000);
+}
+
+async function setLightBrightness(event, entityId) {
+  const bar = event.currentTarget;
+  const rect = bar.getBoundingClientRect();
+  const pct = Math.max(1, Math.min(100, Math.round((event.clientX - rect.left) / rect.width * 100)));
+  const brightness = Math.round(pct / 100 * 255);
+  await api(`/api/ha/services/light/turn_on`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_id: entityId, brightness: brightness })
+  });
+  const entity = window._rawEntities?.get(entityId);
+  if (entity) entity.attributes.brightness = brightness;
+  renderDevices();
+  setTimeout(loadDevices, 2000);
+}
+
+async function vacuumCommand(entityId, command) {
+  await api(`/api/ha/services/vacuum/${command}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_id: entityId })
+  });
+  setTimeout(loadDevices, 3000);
+}
+
+// ============ Audio Transcription ============
+let lastTranscriptCount = 0;
+
+const EMOTION_MAP = {
+  'neutral': '😐', 'happy': '😊', 'angry': '😠',
+  'sad': '😢', 'excited': '🤩'
+};
+
+async function loadTranscripts() {
+  const data = await api('/api/audio/transcripts');
+  if (!data?.transcripts) return;
+  
+  const transcripts = data.transcripts;
+  if (transcripts.length === lastTranscriptCount) return;
+  lastTranscriptCount = transcripts.length;
+  
+  const feed = document.getElementById('transcriptFeed');
+  
+  if (transcripts.length === 0) {
+    feed.innerHTML = '<div class="transcript-empty">等待音频数据...</div>';
+    return;
+  }
+  
+  // Show most recent first
+  const recent = transcripts.slice(-20).reverse();
+  feed.innerHTML = recent.map(t => {
+    const typeClass = t.has_speech ? 'speech' : 'ambient';
+    const icon = t.has_speech ? '🗣️' : '🔊';
+    const emotion = EMOTION_MAP[t.emotion] || '';
+    return `
+      <div class="transcript-item ${typeClass}">
+        <span class="time">${t.time}</span>
+        <span class="content">${icon} ${t.text}</span>
+        ${t.has_speech && emotion ? `<span class="emotion-tag">${emotion} ${t.emotion}</span>` : ''}
+      </div>
+    `;
+  }).join('');
+  
+  document.getElementById('audioStatus').textContent = 
+    `${transcripts.length} records`;
+}
+
+async function triggerAudioCapture() {
+  document.getElementById('audioStatus').textContent = '采集中...';
+  await api('/api/audio/capture', { method: 'POST' });
+  setTimeout(loadTranscripts, 15000); // Wait for capture + transcribe
+}
+
+// ============ Periodic Refresh ============
+function startAutoRefresh() {
+  // Live MJPEG stream — no need to poll, just update timestamp display
+  setInterval(() => {
+    document.getElementById('feedTimestamp').textContent = new Date().toLocaleTimeString();
+  }, 1000);
+  
+  // Refresh devices every 30s
+  setInterval(loadDevices, 30000);
+  
+  // Check analysis updates every 5s — auto-refresh AI Scene Analysis when periodic task posts new result
+  setInterval(async () => {
+    const analysis = await api('/api/analysis');
+    if (analysis && analysis.timestamp > (analysisData?.timestamp || 0)) {
+      renderAnalysis(analysis, 'auto');
+    }
+  }, 5000);
+  
+  // Poll audio transcripts every 8s
+  setInterval(loadTranscripts, 8000);
+
+  // Environment hero bar — refresh every 15s
+  loadEnvSnapshot();
+  setInterval(loadEnvSnapshot, 15000);
+}
+
+// ============ Hero Environment Bar ============
+let _lastEnvNumeric = {};
+function _animateNumber(el, target, decimals = 0, duration = 600) {
+  if (!el) return;
+  const fromTxt = el.textContent.replace(/[^\d.\-]/g, '');
+  const from = isNaN(parseFloat(fromTxt)) ? target : parseFloat(fromTxt);
+  if (Math.abs(from - target) < 0.01) {
+    el.textContent = decimals ? target.toFixed(decimals) : Math.round(target);
+    return;
+  }
+  const t0 = performance.now();
+  function step(now) {
+    const t = Math.min(1, (now - t0) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    const cur = from + (target - from) * eased;
+    el.textContent = decimals ? cur.toFixed(decimals) : Math.round(cur);
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+function _tempClass(t) {
+  if (t == null) return '';
+  if (t < 22) return 'cold';
+  if (t < 26) return '';
+  if (t < 29) return 'warm';
+  return 'hot';
+}
+function _updateSparkline(values) {
+  const lineEl = document.getElementById('envIllumSparkLine');
+  const fillEl = document.getElementById('envIllumSparkFill');
+  const dotEl = document.getElementById('envIllumSparkDot');
+  if (!lineEl || !values || values.length < 2) return;
+  const W = 200, H = 32;
+  const vals = values.slice(-30);
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const span = Math.max(1, hi - lo);
+  const pts = vals.map((v, i) => {
+    const x = (i / (vals.length - 1)) * W;
+    const y = H - ((v - lo) / span) * (H - 4) - 2;
+    return [x, y];
+  });
+  const linePath = pts.map((p, i) => (i === 0 ? `M${p[0]},${p[1]}` : `L${p[0]},${p[1]}`)).join(' ');
+  const fillPath = linePath + ` L${W},${H} L0,${H} Z`;
+  lineEl.setAttribute('d', linePath);
+  if (fillEl) fillEl.setAttribute('d', fillPath);
+  const last = pts[pts.length - 1];
+  if (dotEl) {
+    dotEl.setAttribute('cx', last[0]);
+    dotEl.setAttribute('cy', last[1]);
+  }
+}
+function _renderMarquee(rooms) {
+  const el = document.getElementById('envMarquee');
+  if (!el || !rooms || !rooms.length) return;
+  // Clean room names: trim '空调' suffix etc.
+  const clean = rooms.map(r => ({ name: (r.room || '').replace(/空调|温度/g, '').trim() || '房间', temp: r.temp }));
+  const renderItems = arr => arr.map(r =>
+    `<span class="marquee-item"><span class="room">${r.name}</span><span class="val">${r.temp.toFixed(1)}°</span></span>`
+  ).join('<span class="sep">·</span>');
+  // Duplicate for seamless loop
+  el.innerHTML = renderItems(clean) + '<span class="sep">·</span>' + renderItems(clean);
+}
+async function loadEnvSnapshot() {
+  const r = await api('/api/env/snapshot');
+  if (!r || !r.snapshot) return;
+  const s = r.snapshot;
+
+  // --- Temperature ---
+  if (s.temp && s.temp.avg != null) {
+    _animateNumber(document.getElementById('envTempVal'), s.temp.avg, 1);
+    document.getElementById('envTempMin').textContent = s.temp.min != null ? s.temp.min.toFixed(0) : '—';
+    document.getElementById('envTempMax').textContent = s.temp.max != null ? s.temp.max.toFixed(0) : '—';
+    document.getElementById('envTempRoomCount').textContent = (s.temp.rooms || []).length;
+    const card = document.getElementById('envTempCard');
+    card.classList.remove('cold', 'warm', 'hot');
+    const cls = _tempClass(s.temp.avg);
+    if (cls) card.classList.add(cls);
+    const roomsEl = document.getElementById('envTempRooms');
+    roomsEl.innerHTML = (s.temp.rooms || [])
+      .sort((a,b)=>b.temp-a.temp)
+      .map(r => {
+        const c = _tempClass(r.temp);
+        const name = (r.room || '').replace(/空调/g, '').trim() || '房间';
+        return `<span class="env-room-chip ${c}"><b>${r.temp.toFixed(0)}°</b> ${name}</span>`;
+      }).join('');
+    _renderMarquee(s.temp.rooms || []);
+  }
+
+  // --- Humidity ---
+  if (s.humidity && s.humidity.avg != null) {
+    _animateNumber(document.getElementById('envHumVal'), s.humidity.avg, 0);
+    document.getElementById('envHumSamples').textContent = s.humidity.samples || 0;
+    const bar = document.getElementById('envHumBar');
+    if (bar) bar.style.width = Math.min(100, s.humidity.avg) + '%';
+  }
+
+  // --- Illuminance ---
+  if (s.illuminance) {
+    _animateNumber(document.getElementById('envIllumVal'), s.illuminance.max || 0, 0);
+    document.getElementById('envIllumAvg').textContent = s.illuminance.avg != null ? s.illuminance.avg : '—';
+    if (r.history && r.history.length >= 2) {
+      _updateSparkline(r.history.map(h => h.illum || 0));
+    }
+  }
+
+  // --- Occupancy ---
+  if (s.occupancy) {
+    _animateNumber(document.getElementById('envOccVal'), s.occupancy.active || 0, 0);
+    document.getElementById('envOccTotal').textContent = s.occupancy.total || 0;
+    const bar = document.getElementById('envOccBar');
+    const pct = s.occupancy.total ? (s.occupancy.active / s.occupancy.total) * 100 : 0;
+    if (bar) bar.style.width = pct + '%';
+  }
+
+  // --- Climate ---
+  if (s.climate) {
+    _animateNumber(document.getElementById('envClimVal'), s.climate.runningCount || 0, 0);
+    const el = document.getElementById('envClimRunning');
+    if (el) {
+      const list = s.climate.running || [];
+      if (list.length === 0) {
+        el.innerHTML = '<span style="color:#64748b;">全部停机</span>';
+      } else {
+        const modeMap = { cool:'❄️ 制冷', heat:'🔥 制热', fan_only:'💨 送风', dry:'☀ 除湿', auto:'🤖 自动' };
+        el.innerHTML = list.slice(0, 3).map(r => {
+          const room = (r.name || '').replace(/空调/g, '').trim() || '房间';
+          return `<span><b>${room}</b> ${modeMap[r.mode] || r.mode}</span>`;
+        }).join('');
+      }
+    }
+  }
+}
+// ============ Init ============
+async function init() {
+  document.getElementById('feedTimestamp').textContent = new Date().toLocaleTimeString();
+
+  // Pre-load Xiaoai config so the header 🔊 pill reflects current state
+  loadXiaoaiConfig().catch(() => {});
+
+  // Load camera image immediately
+  const img = document.getElementById('cameraImage');
+  const placeholder = document.getElementById('cameraPlaceholder');
+  img.onload = () => {
+    img.style.display = 'block';
+    if (placeholder) placeholder.style.display = 'none';
+    document.getElementById('cameraStatus').classList.remove('offline');
+  };
+  img.onerror = () => {
+    if (placeholder) {
+      placeholder.style.display = 'flex';
+      placeholder.innerHTML = '⚠️ 摄像头画面不可用';
+    }
+    document.getElementById('cameraStatus').classList.add('offline');
+  };
+  // Start MJPEG live stream (auto-fallback to snapshot polling on error)
+  await loadCameraProfile();   // 先拿自适应 profile
+  startLiveStream();
+  
+  // Load devices
+  await loadDevices();
+  
+  // Load existing analysis
+  const analysis = await api('/api/analysis');
+  if (analysis && analysis.timestamp > 0) {
+    renderAnalysis(analysis, 'auto');
+  }
+  
+  // Load existing transcripts
+  await loadTranscripts();
+  
+  // Start auto refresh
+  startAutoRefresh();
+
+  // Voice control init (must be after DOM is ready)
+  voiceInit();
+
+  // Token usage polling
+  loadTokenUsage();
+  setInterval(loadTokenUsage, 5000);
+
+  // Automation rules: load + connect SSE
+  loadRulesSummary();
+  setInterval(loadRulesSummary, 10000);
+  connectRulesSSE();
+}
+
+// ============ Automation Rules ============
+let rulesPanelOpen = false;
+let rulesData = { enabled: false, rules: [], defaultCooldownSec: 300 };
+let rulesHistory = [];
+let editingRuleId = null;
+
+function toggleRulesPanel() {
+  rulesPanelOpen = !rulesPanelOpen;
+  if (rulesPanelOpen) closeOtherPanels('rules');
+  document.getElementById('rulesPanel').style.display = rulesPanelOpen ? 'block' : 'none';
+  const bd = document.getElementById('rulesPanelBackdrop');
+  if (bd) bd.classList.toggle('active', rulesPanelOpen);
+  if (rulesPanelOpen) {
+    loadRules();
+    loadRulesHistory();
+  }
+}
+
+// Mutually exclusive floating panels — open one closes the others
+function closeOtherPanels(except) {
+  if (except !== 'token') {
+    const t = document.getElementById('tokenPanel');
+    if (t && t.style.display !== 'none') {
+      t.style.display = 'none';
+      if (typeof tokenPanelOpen !== 'undefined') tokenPanelOpen = false;
+    }
+  }
+  if (except !== 'rules') {
+    const r = document.getElementById('rulesPanel');
+    if (r && r.style.display !== 'none') {
+      r.style.display = 'none';
+      rulesPanelOpen = false;
+      const bd = document.getElementById('rulesPanelBackdrop');
+      if (bd) bd.classList.remove('active');
+    }
+  }
+  if (except !== 'voice') {
+    const v = document.getElementById('voicePanel');
+    if (v && v.classList.contains('active')) {
+      v.classList.remove('active');
+    }
+  }
+}
+
+function switchRulesTab(tab) {
+  document.querySelectorAll('.rules-tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.rules-tab-pane').forEach(p =>
+    p.classList.toggle('active', p.id === `rulesTab${tab.charAt(0).toUpperCase() + tab.slice(1)}`));
+  if (tab === 'history') loadRulesHistory();
+  if (tab === 'list') loadRules();
+}
+
+async function loadRulesSummary() {
+  const r = await api('/api/rules');
+  if (!r) return;
+  rulesData = r;
+  const active = (r.rules || []).filter(x => x.enabled).length;
+  const total = (r.rules || []).length;
+  const elA = document.getElementById('statRulesActive');
+  const elT = document.getElementById('statRulesTotal');
+  const badge = document.getElementById('statAutoBadge');
+  if (elA) elA.textContent = active;
+  if (elT) elT.textContent = total;
+  if (badge) {
+    badge.className = `auto-badge ${r.enabled ? 'auto-on' : 'auto-off'}`;
+    badge.textContent = r.enabled ? 'ON' : 'OFF';
+  }
+  const masterEl = document.getElementById('autoMasterToggle');
+  if (masterEl) masterEl.checked = !!r.enabled;
+}
+
+async function loadRules() {
+  await loadRulesSummary();
+  renderRulesList();
+}
+
+function renderRulesList() {
+  const body = document.getElementById('rulesListBody');
+  if (!body) return;
+  const rules = rulesData.rules || [];
+  if (rules.length === 0) {
+    body.innerHTML = '<div style="color:#94a3b8;text-align:center;padding:20px;font-size:12px">还没有规则。点击「＋ 添加」创建第一条。</div>';
+    return;
+  }
+  const triggerLabel = { vision: '👁️画面', audio: '🔊声音', both: '🔁两者' };
+  body.innerHTML = rules.map(r => `
+    <div class="rule-item ${r.enabled ? '' : 'disabled'}">
+      <div class="rule-item-header">
+        <div class="rule-item-name">${escapeHtml(r.name)}</div>
+        <span class="rule-trigger-pill">${triggerLabel[r.trigger] || r.trigger}</span>
+        ${r.dryRun ? '<span class="rule-dry-pill">观察</span>' : ''}
+      </div>
+      <div class="rule-item-meta">
+        <div><b>条件：</b>${escapeHtml(r.condition)}</div>
+        <div><b>动作：</b>${escapeHtml(r.action)}</div>
+        <div><b>冷却：</b>${r.cooldownSec || 300}秒</div>
+      </div>
+      <div class="rule-item-actions">
+        <button onclick="toggleRuleEnabled('${r.id}', ${!r.enabled})">${r.enabled ? '⏸ 停用' : '▶ 启用'}</button>
+        <button onclick="toggleRuleDryRun('${r.id}', ${!r.dryRun})">${r.dryRun ? '🚀 转正式' : '🛡 转观察'}</button>
+        <button onclick="testRule('${r.id}')">⚡ 测试触发</button>
+        <button class="danger" onclick="deleteRule('${r.id}')">🗑 删除</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function toggleRuleEnabled(id, enabled) {
+  await api(`/api/rules/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled })
+  });
+  loadRules();
+}
+
+async function toggleRuleDryRun(id, dryRun) {
+  if (!dryRun && !confirm('要把规则转为正式执行模式吗？规则触发时会真的控制设备。')) return;
+  await api(`/api/rules/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dryRun })
+  });
+  loadRules();
+}
+
+async function deleteRule(id) {
+  if (!confirm('删除这条规则？')) return;
+  await api(`/api/rules/${id}`, { method: 'DELETE' });
+  loadRules();
+}
+
+async function testRule(id) {
+  const r = await api(`/api/rules/${id}/trigger`, { method: 'POST' });
+  if (r) showToast('已手动触发，查看「触发日志」');
+}
+
+async function saveRule() {
+  const name = document.getElementById('ruleName').value.trim();
+  const trigger = document.querySelector('input[name=ruleTrigger]:checked')?.value || 'vision';
+  const condition = document.getElementById('ruleCondition').value.trim();
+  const action = document.getElementById('ruleAction').value.trim();
+  const cooldownSec = parseInt(document.getElementById('ruleCooldown').value) || 300;
+  const dryRun = document.getElementById('ruleDryRun').checked;
+  const hint = document.getElementById('ruleFormHint');
+
+  if (!name || !condition || !action) {
+    hint.textContent = '请填写名称、条件和动作';
+    hint.style.color = '#fca5a5';
+    return;
+  }
+  const result = await api('/api/rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, trigger, condition, action, cooldownSec, dryRun, enabled: true })
+  });
+  if (result) {
+    hint.textContent = `✓ 已添加：${result.name}（默认观察模式，确认无误后转为正式）`;
+    hint.style.color = '#86efac';
+    document.getElementById('ruleName').value = '';
+    document.getElementById('ruleCondition').value = '';
+    document.getElementById('ruleAction').value = '';
+    loadRules();
+    setTimeout(() => switchRulesTab('list'), 1000);
+  }
+}
+
+async function toggleAutomation() {
+  const enabled = document.getElementById('autoMasterToggle').checked;
+  await api('/api/automation/toggle', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled })
+  });
+  loadRulesSummary();
+}
+
+async function loadRulesHistory() {
+  const r = await api('/api/rules/history');
+  if (!r) return;
+  rulesHistory = r.history || [];
+  renderRulesHistory();
+}
+
+function renderRulesHistory() {
+  const body = document.getElementById('rulesHistoryBody');
+  if (!body) return;
+  if (rulesHistory.length === 0) {
+    body.innerHTML = '<div style="color:#94a3b8;text-align:center;padding:20px;font-size:12px">还没有触发记录</div>';
+    return;
+  }
+  body.innerHTML = rulesHistory.slice(0, 50).map(h => {
+    const klass = !h.success ? 'failed' : (h.dryRun ? 'dryrun' : '');
+    return `<div class="history-item ${klass}">
+      <div class="history-item-time">${h.time || new Date(h.ts).toLocaleTimeString('zh-CN')}</div>
+      <div class="history-item-name">${escapeHtml(h.name)} ${h.dryRun ? '· 观察' : ''}</div>
+      <div class="history-item-detail">
+        <div>条件命中：${escapeHtml(h.condition || '')}</div>
+        <div>执行：${escapeHtml(h.action || '')}${h.executed?.length ? ` → ${h.executed.length} 个设备` : ''}</div>
+        ${h.reply ? `<div style="color:#67e8f9">回复：${escapeHtml(h.reply)}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+let rulesEvtSrc = null;
+function connectRulesSSE() {
+  if (rulesEvtSrc) try { rulesEvtSrc.close(); } catch(e){}
+  rulesEvtSrc = new EventSource('/api/rules/events');
+  rulesEvtSrc.onmessage = (e) => {
+    try {
+      const evt = JSON.parse(e.data);
+      if (evt.type === 'fired') {
+        showRuleEvent(evt, 'fired');
+      } else if (evt.type === 'completed') {
+        showRuleEvent(evt, 'completed');
+        if (rulesPanelOpen) loadRulesHistory();
+        loadRulesSummary();
+      }
+    } catch(e){}
+  };
+  rulesEvtSrc.onerror = () => {
+    setTimeout(connectRulesSSE, 5000);
+  };
+}
+
+// Stack of live rule event cards (max 4 visible)
+const ruleEventCards = new Map(); // evt.id → DOM element
+
+function ensureRuleStackContainer() {
+  let stack = document.getElementById('ruleEventStack');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.id = 'ruleEventStack';
+    stack.style.cssText = 'position:fixed;top:80px;right:20px;z-index:2000;display:flex;flex-direction:column;gap:10px;max-width:380px;pointer-events:none;';
+    document.body.appendChild(stack);
+  }
+  return stack;
+}
+
+function showRuleEvent(evt, phase) {
+  const stack = ensureRuleStackContainer();
+  let card = ruleEventCards.get(evt.id);
+
+  // Build card on first sight (fired phase usually)
+  if (!card) {
+    card = document.createElement('div');
+    card.style.cssText = `
+      pointer-events:auto;
+      background:linear-gradient(135deg, rgba(15,23,42,0.96) 0%, rgba(30,41,59,0.96) 100%);
+      border:1px solid #f59e0b;
+      border-radius:12px;
+      padding:14px 16px;
+      box-shadow:0 12px 36px rgba(245,158,11,0.25), 0 0 0 1px rgba(245,158,11,0.15) inset;
+      backdrop-filter:blur(12px);
+      color:#e2e8f0;
+      font-size:13px;
+      animation:ruleSlide 0.35s ease-out;
+      transition:all 0.4s ease;
+      cursor:pointer;
+    `;
+    card.onclick = () => closeRuleCard(evt.id);
+    stack.appendChild(card);
+    ruleEventCards.set(evt.id, card);
+
+    // Limit stack to 4
+    while (stack.children.length > 4) {
+      const oldest = stack.firstChild;
+      const oldId = [...ruleEventCards.entries()].find(([, el]) => el === oldest)?.[0];
+      if (oldId) ruleEventCards.delete(oldId);
+      oldest.remove();
+    }
+  }
+
+  // Determine status styling
+  let badgeColor, badgeIcon, badgeText, borderColor;
+  if (phase === 'fired') {
+    badgeColor = '#f59e0b';
+    badgeIcon = '⚡';
+    badgeText = evt.dryRun ? '观察模式 · 评估中' : '正在执行...';
+    borderColor = '#f59e0b';
+  } else if (phase === 'completed') {
+    if (evt.dryRun) {
+      badgeColor = '#a78bfa';
+      badgeIcon = '👁';
+      badgeText = '观察模式 · 未实际执行';
+      borderColor = '#a78bfa';
+    } else if (evt.success && evt.executed?.length > 0) {
+      badgeColor = '#10b981';
+      badgeIcon = '✓';
+      badgeText = `已执行 · ${evt.executed.length} 个设备`;
+      borderColor = '#10b981';
+    } else if (evt.success) {
+      badgeColor = '#22d3ee';
+      badgeIcon = '✓';
+      badgeText = '已完成';
+      borderColor = '#22d3ee';
+    } else {
+      badgeColor = '#ef4444';
+      badgeIcon = '✗';
+      badgeText = '执行失败';
+      borderColor = '#ef4444';
+    }
+  }
+  card.style.borderColor = borderColor;
+  card.style.boxShadow = `0 12px 36px ${borderColor}40, 0 0 0 1px ${borderColor}26 inset`;
+
+  const time = evt.time || new Date().toLocaleTimeString('zh-CN');
+  const condText = evt.condition || '';
+  const actionText = evt.action || '';
+  const contextText = evt.context || '';
+  const replyText = evt.reply || '';
+  const executedText = evt.executed?.length
+    ? evt.executed.map(x => {
+        const id = x.entity_id || '';
+        const friendly = id.split('.').slice(-1)[0].replace(/_/g, ' ').slice(0, 20);
+        return `<span style="display:inline-block;background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.3);color:#86efac;padding:2px 8px;border-radius:6px;font-size:11px;margin:2px 4px 2px 0">${escapeHtml(friendly)}</span>`;
+      }).join('')
+    : '';
+
+  card.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:18px;color:${badgeColor};text-shadow:0 0 12px ${badgeColor}">${badgeIcon}</span>
+        <span style="font-weight:600;color:#f1f5f9">${escapeHtml(evt.name || '规则触发')}</span>
+      </div>
+      <span style="font-size:11px;color:#94a3b8">${time}</span>
+    </div>
+    <div style="display:inline-block;background:${badgeColor}20;border:1px solid ${badgeColor};color:${badgeColor};padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600;margin-bottom:10px">${badgeText}</div>
+    ${condText ? `
+      <div style="margin-top:6px;padding:8px 10px;background:rgba(15,23,42,0.5);border-left:3px solid #64748b;border-radius:4px;margin-bottom:8px">
+        <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">检测到</div>
+        <div style="color:#cbd5e1;line-height:1.4">${escapeHtml(condText)}</div>
+      </div>` : ''}
+    ${contextText ? `
+      <div style="margin-top:6px;padding:8px 10px;background:rgba(34,211,238,0.08);border-left:3px solid #22d3ee;border-radius:4px;margin-bottom:8px">
+        <div style="font-size:10px;color:#22d3ee;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">画面/语音</div>
+        <div style="color:#a5f3fc;line-height:1.4;font-size:12px">${escapeHtml(contextText)}</div>
+      </div>` : ''}
+    ${actionText ? `
+      <div style="margin-top:6px;padding:8px 10px;background:rgba(245,158,11,0.08);border-left:3px solid ${badgeColor};border-radius:4px;margin-bottom:8px">
+        <div style="font-size:10px;color:${badgeColor};text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px">执行动作</div>
+        <div style="color:#fde68a;line-height:1.4">${escapeHtml(actionText)}</div>
+      </div>` : ''}
+    ${executedText ? `
+      <div style="margin-top:8px;display:flex;flex-wrap:wrap">${executedText}</div>` : ''}
+    ${replyText && phase === 'completed' ? `
+      <div style="margin-top:8px;font-size:12px;color:#86efac;font-style:italic">${escapeHtml(replyText)}</div>` : ''}
+    <div style="margin-top:10px;text-align:right;font-size:10px;color:#64748b">点击关闭</div>
+  `;
+
+  // Auto-close after a delay (fired keeps card open longer waiting for completed)
+  clearTimeout(card._closeTimer);
+  const ttl = phase === 'completed' ? 9000 : 30000;
+  card._closeTimer = setTimeout(() => closeRuleCard(evt.id), ttl);
+}
+
+function closeRuleCard(id) {
+  const card = ruleEventCards.get(id);
+  if (!card) return;
+  card.style.opacity = '0';
+  card.style.transform = 'translateX(20px)';
+  setTimeout(() => {
+    try { card.remove(); } catch(e){}
+    ruleEventCards.delete(id);
+  }, 400);
+}
+
+// Inject keyframes once
+(function injectRuleAnim(){
+  if (document.getElementById('ruleAnimStyle')) return;
+  const s = document.createElement('style');
+  s.id = 'ruleAnimStyle';
+  s.textContent = `@keyframes ruleSlide { from { opacity:0; transform:translateX(40px) scale(0.95) } to { opacity:1; transform:translateX(0) scale(1) } }`;
+  document.head.appendChild(s);
+})();
+
+// Backward-compatible simple toast (used elsewhere)
+function showToast(msg) {
+  let t = document.getElementById('ruleToast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'ruleToast';
+    t.style.cssText = 'position:fixed;top:80px;left:50%;transform:translateX(-50%);background:rgba(15,23,42,0.95);border:1px solid #22d3ee;color:#a7f3d0;padding:10px 18px;border-radius:10px;z-index:2000;font-size:13px;box-shadow:0 10px 30px rgba(0,0,0,0.5);transition:opacity 0.3s;';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.opacity = '1';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => { t.style.opacity = '0'; }, 3000);
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+// ============ LLM Token Usage ============
+let tokenPanelOpen = false;
+let lastUsage = null;
+
+function toggleTokenPanel() {
+  tokenPanelOpen = !tokenPanelOpen;
+  if (tokenPanelOpen && typeof closeOtherPanels === 'function') closeOtherPanels('token');
+  document.getElementById('tokenPanel').style.display = tokenPanelOpen ? 'block' : 'none';
+  if (tokenPanelOpen) renderTokenPanel();
+}
+
+async function loadTokenUsage() {
+  const u = await api('/api/usage');
+  if (!u) return;
+  lastUsage = u;
+  // Update top bar card
+  const totalEl = document.getElementById('statTokens');
+  const costEl = document.getElementById('statCost');
+  if (totalEl) totalEl.textContent = formatNumber(u.totalTokens || 0);
+  if (costEl) costEl.textContent = (u.estimatedCostCNY || 0).toFixed(4);
+  // Refresh detail panel if open
+  if (tokenPanelOpen) renderTokenPanel();
+}
+
+function formatNumber(n) {
+  if (n < 1000) return String(n);
+  if (n < 1000000) return (n / 1000).toFixed(n < 10000 ? 2 : 1) + 'k';
+  return (n / 1000000).toFixed(2) + 'M';
+}
+
+function renderTokenPanel() {
+  const u = lastUsage;
+  if (!u) return;
+  // Summary
+  const upMin = Math.floor((u.uptimeMs || 0) / 60000);
+  document.getElementById('tokenSummary').innerHTML = `
+    <div><div class="lbl">调用次数</div><div class="val">${u.totalCalls || 0}</div></div>
+    <div><div class="lbl">Token 总数</div><div class="val">${formatNumber(u.totalTokens || 0)}</div></div>
+    <div><div class="lbl">输入 Token</div><div class="val">${formatNumber(u.promptTokens || 0)}</div></div>
+    <div><div class="lbl">输出 Token</div><div class="val">${formatNumber(u.completionTokens || 0)}</div></div>
+    <div style="grid-column:1/3"><div class="lbl">预估成本 · 运行 ${upMin} 分钟</div>
+      <div class="val" style="color:#fbbf24">¥ ${(u.estimatedCostCNY || 0).toFixed(4)}</div></div>
+  `;
+  // By model
+  const modelHtml = Object.entries(u.byModel || {})
+    .sort((a,b) => b[1].totalTokens - a[1].totalTokens)
+    .map(([m, s]) => `
+      <div>
+        <div class="name">${escapeHtml(m)}</div>
+        <div class="num">${formatNumber(s.totalTokens)}</div>
+        <div class="calls">${s.calls}×</div>
+      </div>
+    `).join('') || '<div style="color:#64748b;padding:6px">还没有调用</div>';
+  document.getElementById('tokenByModel').innerHTML = modelHtml;
+  // By type
+  const typeMap = {
+    vision_analyze: '👁️ 视觉分析',
+    audio_transcribe: '🔊 音频转写',
+    nl_command: '💬 自然语言指令',
+    voice_asr_partial: '🎤 实时识别',
+    voice_asr_final: '🎤 最终识别',
+  };
+  const typeHtml = Object.entries(u.byType || {})
+    .sort((a,b) => b[1].totalTokens - a[1].totalTokens)
+    .map(([t, s]) => `
+      <div>
+        <div class="name">${typeMap[t] || t}</div>
+        <div class="num">${formatNumber(s.totalTokens)}</div>
+        <div class="calls">${s.calls}×</div>
+      </div>
+    `).join('') || '<div style="color:#64748b;padding:6px">--</div>';
+  document.getElementById('tokenByType').innerHTML = typeHtml;
+  // Recent
+  const recent = (u.recent || []).slice(0, 15);
+  document.getElementById('tokenRecent').innerHTML = recent.map(r => {
+    const d = new Date(r.ts);
+    const ts = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
+    const typeShort = (typeMap[r.type] || r.type).replace(/^[^ ]+ /, '');
+    return `<div class="row"><span class="ts">${ts}</span><span class="type">${typeShort}</span><span class="tok">${formatNumber(r.total)}</span></div>`;
+  }).join('') || '<div style="color:#64748b">--</div>';
+}
+
+// ============ Voice Control ============
+let voiceSSE = null;
+let voiceState = { running: false, state: 'idle', wakeWords: [] };
+const voiceLog = [];
+
+async function voiceInit() {
+  // Build floating panel
+  const panel = document.createElement('div');
+  panel.className = 'voice-panel';
+  panel.id = 'voicePanel';
+  panel.innerHTML = `
+    <div class="voice-panel-header">
+      <div class="voice-panel-title">🎤 语音控制</div>
+      <div class="voice-state-badge idle" id="voiceStateBadge">关闭</div>
+    </div>
+    <div class="voice-subtitle empty" id="voiceSubtitle">说出唤醒词后接指令，例如：小牛 打开客厅灯</div>
+    <div class="voice-stage" id="voiceStage" style="display:none">
+      <div class="voice-stage-label" id="voiceStageLabel">监听中</div>
+      <div class="voice-stage-text" id="voiceStageText"></div>
+    </div>
+    <div id="voiceReplyBox"></div>
+    <div class="voice-log" id="voiceLog"></div>
+    <div class="voice-source-toggle">
+      <span class="voice-source-label">音源：</span>
+      <button class="voice-source-btn active" id="btnSourceRtsp" onclick="switchAudioSource('rtsp')">📹 摄像头</button>
+      <button class="voice-source-btn" id="btnSourceLocal" onclick="switchAudioSource('local')">💻 本地麦克风</button>
+      <span class="voice-tts-hint" id="ttsHint" style="display:none">🔊 TTS</span>
+    </div>
+    <div class="voice-config">
+      <span>唤醒词：</span>
+      <input type="text" id="voiceWakeInput" placeholder="多个词用逗号分隔">
+      <button onclick="saveWakeWords()">保存</button>
+    </div>
+    <div class="voice-config" id="xiaoaiConfigBox" style="flex-wrap:wrap; gap:6px; display:none;">
+      <!-- 已迁移到独立 #xiaoaiPanel；保留容器以兼容旧逻辑 -->
+    </div>
+  `;
+  document.body.appendChild(panel);
+
+  // Initial status
+  const status = await api('/api/voice/status');
+  if (status) {
+    voiceState = status;
+    updateVoiceUI();
+    document.getElementById('voiceWakeInput').value = (status.wakeWords || []).join(', ');
+    // Sync audio source buttons
+    if (status.audioSource) updateSourceButtons(status.audioSource);
+  }
+  // Load Xiaoai speaker settings + bind handlers
+  await loadXiaoaiConfig();
+  bindXiaoaiHandlers();
+  // Open SSE connection regardless of running state, server will broadcast lifecycle
+  connectVoiceSSE();
+}
+
+function connectVoiceSSE() {
+  if (voiceSSE) try { voiceSSE.close(); } catch (e) {}
+  voiceSSE = new EventSource('/api/voice/events');
+  voiceSSE.onmessage = (e) => {
+    try {
+      const ev = JSON.parse(e.data);
+      handleVoiceEvent(ev);
+    } catch (err) {}
+  };
+  voiceSSE.onerror = () => {
+    setTimeout(connectVoiceSSE, 4000);
+  };
+}
+
+function handleVoiceEvent(ev) {
+  const sub = document.getElementById('voiceSubtitle');
+  const stage = document.getElementById('voiceStage');
+  const stageLabel = document.getElementById('voiceStageLabel');
+  const stageText = document.getElementById('voiceStageText');
+  const replyBox = document.getElementById('voiceReplyBox');
+
+  // Helper: show stage with label + text + optional class
+  const showStage = (label, text, cls, withCursor) => {
+    stage.style.display = 'block';
+    stage.className = 'voice-stage' + (cls ? ' ' + cls : '');
+    stageLabel.textContent = label;
+    stageText.innerHTML = escapeHtml(text || '') + (withCursor ? '<span class="cursor"></span>' : '');
+  };
+  const hideStage = () => { stage.style.display = 'none'; };
+
+  switch (ev.type) {
+    case 'state':
+      voiceState.state = ev.state;
+      voiceState.running = ev.state !== 'idle';
+      updateVoiceUI();
+      // Update only the badge / placeholder hint — DO NOT clobber stage text
+      if (ev.state === 'idle') {
+        sub.textContent = '语音监听已关闭';
+        sub.classList.add('empty');
+        hideStage();
+      } else if (ev.state === 'recording') {
+        showStage('正在录音 · 请说话', '', 'partial', true);
+        sub.classList.remove('empty');
+        sub.textContent = '🔴 正在录音...';
+      } else if (ev.state === 'asr') {
+        // Keep stage text from last partial; just update label
+        if (stage.style.display === 'block') {
+          stageLabel.textContent = '识别中...';
+        }
+        sub.textContent = '🧠 识别中...';
+      } else if (ev.state === 'parsing') {
+        sub.textContent = '⚙️ 解析指令中...';
+      } else if (ev.state === 'executing') {
+        sub.textContent = '🚀 执行中...';
+      } else if (ev.state === 'listening') {
+        // Restore placeholder only after a moment, do not clear stage immediately
+        sub.textContent = '🟢 监听中 · 等待唤醒词';
+        sub.classList.remove('empty');
+      }
+      break;
+
+    case 'partial':
+      // Real-time streaming subtitle during recording
+      showStage('实时识别中...', ev.text || '', 'partial', true);
+      break;
+
+    case 'asr':
+      // Final transcription — lock it
+      showStage('识别完成', ev.text || '(无内容)', 'final', false);
+      sub.dataset.lastUtterance = ev.text || '';
+      sub.textContent = '🗣️ ' + (ev.text || '');
+      sub.classList.remove('empty');
+      addVoiceLog(`[识别] ${ev.text || '(空)'}`, 'asr');
+      break;
+
+    case 'wake':
+      stage.className = 'voice-stage final';
+      stageLabel.textContent = '唤醒成功 · 指令';
+      stageText.innerHTML = '✨ <span style="color:#fbbf24;font-weight:700">' + escapeHtml(ev.wakeWord) + '</span> → ' +
+                            '<span style="color:#a7f3d0">' + escapeHtml(ev.command || '(请说出指令)') + '</span>';
+      addVoiceLog(`[唤醒] ${ev.wakeWord} → ${ev.command || '(无)'}`, 'wake');
+      break;
+
+    case 'ignored': {
+      stage.className = 'voice-stage';
+      let lbl, logTag;
+      if (ev.reason === 'not_smart_home') {
+        lbl = '已唤醒 · 但与智能家居无关';
+        logTag = `[过滤] 唤醒后命令"${ev.command || ev.text}"非家居相关`;
+      } else {
+        lbl = '未匹配唤醒词 · 已忽略';
+        logTag = `[忽略] ${ev.text}`;
+      }
+      stageLabel.textContent = lbl;
+      stageText.textContent = ev.command || ev.text || '';
+      addVoiceLog(logTag, 'ignored');
+      // Auto-fade after 3s
+      setTimeout(() => { if (stageLabel.textContent.includes('忽略') || stageLabel.textContent.includes('无关')) hideStage(); }, 3500);
+      break;
+    }
+
+    case 'parse':
+      // Optional: show parsed intent
+      break;
+
+    case 'executed': {
+      const okCount = (ev.executed || []).filter(x => x.ok).length;
+      const reply = ev.reply || `已执行 ${okCount} 项操作`;
+      replyBox.innerHTML = `<div class="voice-reply">✅ ${escapeHtml(reply)}</div>`;
+      addVoiceLog(`[执行] ${reply} (${okCount}/${(ev.executed||[]).length})`, 'exec');
+      setTimeout(() => { if (replyBox.firstChild) replyBox.innerHTML = ''; }, 6000);
+      setTimeout(loadDevices, 1000);
+      break;
+    }
+
+    case 'error':
+      replyBox.innerHTML = `<div class="voice-reply error">❌ ${escapeHtml(ev.message)}</div>`;
+      addVoiceLog(`[错误] ${ev.message}`, 'error');
+      break;
+
+    case 'reply':
+      replyBox.innerHTML = `<div class="voice-reply ${ev.success===false?'error':''}">${ev.success===false?'❌':'✅'} ${escapeHtml(ev.text)}</div>`;
+      break;
+  }
+}
+
+function addVoiceLog(text, kind) {
+  const log = document.getElementById('voiceLog');
+  if (!log) return;
+  voiceLog.unshift({ text, kind, ts: Date.now() });
+  if (voiceLog.length > 30) voiceLog.length = 30;
+  log.innerHTML = voiceLog.slice(0, 8).map(r => {
+    const t = new Date(r.ts).toLocaleTimeString().slice(0, 8);
+    return `<div class="voice-log-row">${t} ${escapeHtml(r.text)}</div>`;
+  }).join('');
+}
+
+function updateVoiceUI() {
+  const btn = document.getElementById('voiceToggleBtn');
+  const lbl = document.getElementById('voiceToggleLabel');
+  const panel = document.getElementById('voicePanel');
+  const badge = document.getElementById('voiceStateBadge');
+  if (!btn) return;
+
+  if (voiceState.running) {
+    btn.classList.add('on');
+    lbl.textContent = '语音 开';
+    if (panel) panel.classList.add('active');
+  } else {
+    btn.classList.remove('on');
+    lbl.textContent = '语音 关';
+    if (panel) panel.classList.remove('active');
+  }
+
+  if (badge) {
+    badge.className = 'voice-state-badge ' + voiceState.state;
+    const label = {
+      idle: '关闭', listening: '监听中', recording: '录音中',
+      asr: '识别中', parsing: '解析中', executing: '执行中'
+    }[voiceState.state] || voiceState.state;
+    badge.textContent = label;
+  }
+}
+
+async function toggleVoice() {
+  const path = voiceState.running ? '/api/voice/stop' : '/api/voice/start';
+  const r = await api(path, { method: 'POST' });
+  if (r?.status) {
+    voiceState = r.status;
+    updateVoiceUI();
+  }
+}
+
+async function saveWakeWords() {
+  const inp = document.getElementById('voiceWakeInput');
+  const words = inp.value.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
+  if (!words.length) { alert('至少需要一个唤醒词'); return; }
+  const r = await api('/api/voice/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ wakeWords: words })
+  });
+  if (r?.ok) {
+    voiceState.wakeWords = words;
+    addVoiceLog(`[配置] 唤醒词已更新：${words.join(', ')}`, 'config');
+  }
+}
+
+// === Xiaoai speaker controls ===
+let xiaoaiCfg = null;
+
+function ensureXiaoaiPanel() {
+  if (document.getElementById('xiaoaiPanel')) return;
+  const p = document.createElement('div');
+  p.id = 'xiaoaiPanel';
+  p.className = 'voice-panel';
+  p.style.cssText = 'right:20px; bottom:20px; width:320px;';
+  p.innerHTML = `
+    <div class="voice-panel-header">
+      <div class="voice-panel-title">🔊 小爱播报设置</div>
+      <button onclick="toggleXiaoaiPanel()" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:18px;line-height:1;">×</button>
+    </div>
+    <div class="voice-config" style="flex-direction:column; align-items:flex-start; gap:10px;">
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+        <input type="checkbox" id="xiaoaiEnabledChk" style="cursor:pointer;">
+        <span>启用小爱播报</span>
+      </label>
+      <div style="display:flex; align-items:center; gap:8px; width:100%;">
+        <span style="white-space:nowrap;">默认音箱：</span>
+        <select id="xiaoaiSpeakerSel" style="flex:1; background:rgba(15,23,42,0.6); color:#cbd5e1; border:1px solid rgba(99,102,241,0.3); border-radius:6px; padding:5px 8px; font-size:12px;"></select>
+      </div>
+      <div style="display:flex; gap:14px; flex-wrap:wrap;">
+        <label style="display:flex; align-items:center; gap:5px; font-size:12px; cursor:pointer;" title="规则触发时播报">
+          <input type="checkbox" id="xiaoaiTrigRule" style="cursor:pointer;">规则触发
+        </label>
+        <label style="display:flex; align-items:center; gap:5px; font-size:12px; cursor:pointer;" title="自然语言指令执行时播报">
+          <input type="checkbox" id="xiaoaiTrigNL" style="cursor:pointer;">语音/指令
+        </label>
+        <label style="display:flex; align-items:center; gap:5px; font-size:12px; cursor:pointer;" title="问答模式回答（非家电指令时 LLM 兜底）">
+          <input type="checkbox" id="xiaoaiTrigQA" style="cursor:pointer;">问答回答
+        </label>
+      </div>
+      <button onclick="testXiaoai()" style="width:100%; padding:6px; font-size:12px;">📢 测试播报</button>
+      <div style="border-top:1px dashed rgba(148,163,184,0.18); margin-top:6px; padding-top:8px;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:12px;" title="唤醒词命中后，若不是家电指令，将交给 LLM 当通用助手回答并播报">
+          <input type="checkbox" id="qaModeChk" style="cursor:pointer;">
+          <span>🤖 问答模式（非家电指令交给 LLM 回答）</span>
+        </label>
+        <div id="qaModelHint" style="font-size:10px; color:#64748b; margin-top:4px; padding-left:24px;">模型：— · 风格：极简一句话</div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(p);
+}
+
+function toggleXiaoaiPanel() {
+  ensureXiaoaiPanel();
+  const p = document.getElementById('xiaoaiPanel');
+  const isActive = p.classList.toggle('active');
+  const btn = document.getElementById('xiaoaiToggleBtn');
+  if (btn) btn.classList.toggle('on', isActive);
+  if (isActive) {
+    loadXiaoaiConfig().then(bindXiaoaiHandlers);
+  }
+}
+
+async function loadXiaoaiConfig() {
+  ensureXiaoaiPanel();
+  const r = await api('/api/xiaoai/config');
+  if (!r) return;
+  xiaoaiCfg = r;
+  const enChk = document.getElementById('xiaoaiEnabledChk');
+  const sel = document.getElementById('xiaoaiSpeakerSel');
+  const trigRule = document.getElementById('xiaoaiTrigRule');
+  const trigNL = document.getElementById('xiaoaiTrigNL');
+  const trigQA = document.getElementById('xiaoaiTrigQA');
+  if (!enChk || !sel) return;
+  enChk.checked = r.enabled !== false;
+  sel.innerHTML = (r.speakers || []).map(sp =>
+    `<option value="${sp.entity_id}" ${sp.entity_id === r.defaultSpeaker ? 'selected' : ''}>${sp.name}</option>`
+  ).join('');
+  trigRule.checked = r.triggerOn?.ruleTrigger !== false;
+  trigNL.checked = r.triggerOn?.nlCommand !== false;
+  if (trigQA) trigQA.checked = r.triggerOn?.qaCommand !== false;
+  // Reflect enabled status on header pill
+  const btn = document.getElementById('xiaoaiToggleBtn');
+  if (btn) btn.classList.toggle('on', !!r.enabled);
+
+  // Also load QA config for the fallback toggle
+  try {
+    const qa = await api('/api/voice/qa/config');
+    const qaChk = document.getElementById('qaModeChk');
+    const qaHint = document.getElementById('qaModelHint');
+    if (qaChk && qa) qaChk.checked = qa.enabled !== false;
+    if (qaHint && qa) qaHint.textContent = `模型：${qa.model || '—'} · 上限 ${qa.maxTokens || '?'} tokens · 超时 ${(qa.timeoutMs||8000)/1000}s`;
+  } catch {}
+}
+
+async function saveXiaoaiPatch(patch) {
+  const r = await api('/api/xiaoai/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch)
+  });
+  if (r?.ok) xiaoaiCfg = r.xiaoai;
+  return r;
+}
+
+async function testXiaoai() {
+  const sel = document.getElementById('xiaoaiSpeakerSel');
+  const target = sel?.value;
+  if (!target) { showToast('未选择音箱'); return; }
+  const r = await api('/api/xiaoai/speak', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: '测试播报，我是智能家居 AI 助手', speaker: target })
+  });
+  if (r?.ok) {
+    addVoiceLog(`[小爱] 测试播报已发送：${sel.options[sel.selectedIndex].text}`, 'config');
+  } else {
+    addVoiceLog(`[小爱] 测试失败：${r?.reason || r?.error || '未知错误'}`, 'error');
+  }
+}
+
+// Wire up xiaoai controls (called after loadXiaoaiConfig populates them)
+function bindXiaoaiHandlers() {
+  const enChk = document.getElementById('xiaoaiEnabledChk');
+  const sel = document.getElementById('xiaoaiSpeakerSel');
+  const trigRule = document.getElementById('xiaoaiTrigRule');
+  const trigNL = document.getElementById('xiaoaiTrigNL');
+  if (!enChk) return;
+  enChk.onchange = () => {
+    saveXiaoaiPatch({ enabled: enChk.checked });
+    const btn = document.getElementById('xiaoaiToggleBtn');
+    if (btn) btn.classList.toggle('on', enChk.checked);
+  };
+  sel.onchange = () => saveXiaoaiPatch({ defaultSpeaker: sel.value });
+  trigRule.onchange = () => saveXiaoaiPatch({ triggerOn: { ruleTrigger: trigRule.checked } });
+  trigNL.onchange = () => saveXiaoaiPatch({ triggerOn: { nlCommand: trigNL.checked } });
+  const trigQA = document.getElementById('xiaoaiTrigQA');
+  if (trigQA) trigQA.onchange = () => saveXiaoaiPatch({ triggerOn: { qaCommand: trigQA.checked } });
+  const qaChk = document.getElementById('qaModeChk');
+  if (qaChk) qaChk.onchange = async () => {
+    await api('/api/voice/qa/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: qaChk.checked })
+    });
+  };
+}
+
+// === RTSP camera URL config ===
+let rtspCfg = null;
+
+function ensureRtspPanel() {
+  if (document.getElementById('rtspPanel')) return;
+  const p = document.createElement('div');
+  p.id = 'rtspPanel';
+  p.className = 'voice-panel';
+  p.style.cssText = 'right:20px; bottom:20px; width:440px; max-width:calc(100vw - 40px); max-height:calc(100vh - 40px); overflow-y:auto;';
+  p.innerHTML = `
+    <div class="voice-panel-header">
+      <div class="voice-panel-title">📹 RTSP 摄像头地址</div>
+      <button onclick="toggleRtspPanel()" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:18px;line-height:1;">×</button>
+    </div>
+    <div class="voice-config" style="flex-direction:column; align-items:stretch; gap:10px;">
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-size:11px; color:#94a3b8;">
+        <span>类型：</span>
+        <span id="rtspType" style="padding:2px 8px; border-radius:10px; background:rgba(99,102,241,0.18); color:#a5b4fc; white-space:nowrap;">—</span>
+        <span id="rtspTtlNote" style="color:#cbd5e1;"></span>
+      </div>
+      <textarea id="rtspUrlInput" rows="4" placeholder="rtsp://..." style="width:100%; box-sizing:border-box; background:rgba(15,23,42,0.7); color:#e2e8f0; border:1px solid rgba(99,102,241,0.3); border-radius:8px; padding:8px; font-family:monospace; font-size:11px; line-height:1.5; resize:vertical; word-break:break-all; white-space:pre-wrap; overflow-wrap:anywhere;"></textarea>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button onclick="testRtspUrl()" id="rtspTestBtn" style="flex:1 1 140px; padding:6px 10px; font-size:12px;">🧪 测试取一帧</button>
+        <button onclick="saveRtspUrl()" id="rtspSaveBtn" style="flex:1 1 140px; padding:6px 10px; font-size:12px; background:rgba(34,197,94,0.18); color:#86efac;">💾 保存并热重启</button>
+      </div>
+      <div id="rtspStatusLine" style="font-size:11px; color:#94a3b8; min-height:14px; word-break:break-all; overflow-wrap:anywhere;"></div>
+      <div style="font-size:10px; color:#64748b; line-height:1.6; word-break:break-all; overflow-wrap:anywhere;">
+        💡 ffmpeg 只能直连 <b>端口 554</b> 的 RTSP，格式：<code style="display:inline-block; max-width:100%; word-break:break-all; overflow-wrap:anywhere;">rtsp://USER:&lt;密码&gt;@192.168.X.X:554/Sms=5.unicast</code><br>
+        ⚠️ DSM webman cgi（端口 5000，含 <code>StmKey</code>）是浏览器隧道 URL，需 DSM 登录会话，<b>无法直接 ffmpeg 拉流</b>。<br>
+        🔑 想免续期请去 DSM SS → 设置 → 流密码授权，把「有效期间」改成最长选项，再重新认证生成新密码。
+      </div>
+    </div>
+  `;
+  document.body.appendChild(p);
+}
+
+function toggleRtspPanel() {
+  ensureRtspPanel();
+  const p = document.getElementById('rtspPanel');
+  const isActive = p.classList.toggle('active');
+  const btn = document.getElementById('rtspToggleBtn');
+  if (btn) btn.classList.toggle('on', isActive);
+  if (isActive) loadRtspConfig();
+}
+
+async function loadRtspConfig() {
+  ensureRtspPanel();
+  const r = await api('/api/rtsp/config');
+  if (!r) return;
+  rtspCfg = r;
+  document.getElementById('rtspUrlInput').value = r.rtspUrl || '';
+  document.getElementById('rtspType').textContent = r.type || '—';
+  document.getElementById('rtspTtlNote').textContent = r.ttlNote || '';
+  // Color-code type pill
+  const pill = document.getElementById('rtspType');
+  if (r.type === 'stmkey') {
+    pill.style.background = 'rgba(34,197,94,0.18)'; pill.style.color = '#86efac';
+  } else if (r.type === 'userpass') {
+    pill.style.background = 'rgba(245,158,11,0.18)'; pill.style.color = '#fbbf24';
+  } else {
+    pill.style.background = 'rgba(99,102,241,0.18)'; pill.style.color = '#a5b4fc';
+  }
+}
+
+async function testRtspUrl() {
+  const url = document.getElementById('rtspUrlInput').value.trim();
+  const status = document.getElementById('rtspStatusLine');
+  const btn = document.getElementById('rtspTestBtn');
+  if (!url) { status.textContent = '⚠️ URL 为空'; return; }
+  status.style.color = '#94a3b8';
+  status.textContent = '⏳ 测试中（最多 12s）…';
+  btn.disabled = true;
+  try {
+    const r = await api('/api/rtsp/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rtspUrl: url })
+    });
+    if (r?.ok) {
+      status.style.color = '#86efac';
+      status.textContent = `✅ 成功取到 1 帧（${(r.size/1024).toFixed(1)} KB）`;
+    } else {
+      status.style.color = '#fca5a5';
+      status.textContent = `❌ 测试失败：${r?.error || '未知错误'}`;
+    }
+  } catch (e) {
+    status.style.color = '#fca5a5';
+    status.textContent = `❌ 请求出错：${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveRtspUrl() {
+  const url = document.getElementById('rtspUrlInput').value.trim();
+  const status = document.getElementById('rtspStatusLine');
+  const btn = document.getElementById('rtspSaveBtn');
+  if (!url) { status.textContent = '⚠️ URL 为空'; return; }
+  if (!/^rtsp:\/\//i.test(url)) {
+    status.style.color = '#fca5a5';
+    status.textContent = '❌ URL 必须以 rtsp:// 开头';
+    return;
+  }
+  if (!confirm('确认保存新的 RTSP 地址？将立即热重启 ffmpeg 管线。')) return;
+  status.style.color = '#94a3b8';
+  status.textContent = '💾 保存中…';
+  btn.disabled = true;
+  try {
+    const r = await api('/api/rtsp/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rtspUrl: url })
+    });
+    if (r?.ok) {
+      status.style.color = '#86efac';
+      status.textContent = '✅ 已保存并杀掉旧 ffmpeg，下一周期自动用新 URL 拉流';
+      await loadRtspConfig();
+    } else {
+      status.style.color = '#fca5a5';
+      status.textContent = `❌ 保存失败：${r?.error || '未知错误'}`;
+    }
+  } catch (e) {
+    status.style.color = '#fca5a5';
+    status.textContent = `❌ 请求出错：${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Audio source switch
+async function switchAudioSource(source) {
+  const r = await api('/api/voice/source', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source })
+  });
+  if (r?.ok) {
+    updateSourceButtons(r.audioSource);
+    addVoiceLog(`[配置] 音源切换到：${source === 'local' ? '本地麦克风' : '摄像头'}`, 'config');
+  }
+}
+
+function updateSourceButtons(source) {
+  const rtspBtn = document.getElementById('btnSourceRtsp');
+  const localBtn = document.getElementById('btnSourceLocal');
+  const ttsHint = document.getElementById('ttsHint');
+  if (!rtspBtn || !localBtn) return;
+  rtspBtn.classList.toggle('active', source === 'rtsp');
+  localBtn.classList.toggle('active', source === 'local');
+  if (ttsHint) ttsHint.style.display = source === 'local' ? 'inline-block' : 'none';
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+
+init();
+</script>
+</body>
+</html>

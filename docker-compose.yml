@@ -1,0 +1,73 @@
+# Smart Home AI Dashboard — Synology / Linux 部署模板
+#
+# 使用方式：
+#   1. 把这个文件 + Dockerfile + 项目源码放到群晖 /volume1/docker/smart-home-ai/
+#   2. 准备 config.json（从 config.json.example 复制改）
+#   3. cd /volume1/docker/smart-home-ai && docker-compose up -d
+#
+# 如果用 Container Manager（DSM 7.2+）UI 操作：
+#   - 项目 → 创建 → 路径选 /volume1/docker/smart-home-ai → 来源选 docker-compose.yml
+#
+# 故障排查：
+#   - docker logs -f smart-home-ai          # 实时日志
+#   - docker exec -it smart-home-ai sh      # 进容器
+#   - docker exec smart-home-ai ffmpeg -version    # 验证 ffmpeg 装好了
+
+services:
+  smart-home-ai:
+    # 镜像名：build 后的本地名（如果你不打 registry，用本地名即可）
+    # 如果群晖通过 docker save | scp 导入，导入后镜像名一致即可直接用
+    image: smart-home-ai:latest
+    container_name: smart-home-ai
+
+    # ⚠️ 网络模式（默认 bridge，推荐分发场景使用）
+    #
+    # bridge + ports：
+    #   - 跨平台一致（Mac/Win/Linux 全支持）
+    #   - 容器在独立网络命名空间，与 HA/Frigate 等主流项目惯例一致
+    #   - 容器内 127.0.0.1 = 容器自己。访问 HA / RTSP 必须用宿主机真实 IP（如 192.168.X.X）
+    #   - 端口冲突时改左边端口即可：例如 "18090:8090"
+    ports:
+      - "8090:8090"
+
+    # 备选：host 网络（仅 Linux/NAS 原生 Docker；HA + RTSP 同机时可选）
+    # network_mode: host
+
+    # 卷挂载：
+    #   - config.json：单文件挂载，权限独立，热修改 → 重启容器生效
+    #   - snapshots/：摄像头快照缓存，volume 而非 bind 也行，数据可丢
+    #   - audio/：音频采样缓存，同上
+    volumes:
+      - ./config.json:/app/config.json:rw
+      - ./snapshots:/app/snapshots:rw
+      - ./audio:/app/audio:rw
+
+    # 时区
+    environment:
+      - TZ=Asia/Shanghai
+      - NODE_ENV=production
+
+    # ⚠️ 群晖用户：默认 docker 用户 PUID=1026 (admin), PGID=100 (users)
+    # 如果你 ssh 到群晖 `id` 一下确认。Dockerfile 里设的是 node 用户(uid 1000)，
+    # 如果挂载的 config.json 是群晖 admin 创建的，可能 node 读不到。
+    # 解决：在群晖上 chmod 644 config.json 或改下面这行让容器内用真实 uid 跑。
+    # 取消注释并改成你真实的 PUID:PGID
+    # user: "1026:100"
+
+    # 重启策略：除了你手动 stop，否则一直自动拉起
+    restart: unless-stopped
+
+    # 健康检查覆盖（Dockerfile 里已有，这里仅展示如何 override）
+    # healthcheck:
+    #   test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/api/snapshot.json"]
+    #   interval: 30s
+    #   timeout: 8s
+    #   retries: 2
+    #   start_period: 20s
+
+    # 日志限制：避免群晖日志撑爆磁盘
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

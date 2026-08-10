@@ -1,0 +1,1196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 智能家居 · Redesign Mock</title>
+<style>
+/* ============================================================
+   Design Tokens — single source of truth
+   ============================================================ */
+:root {
+  /* spacing scale (rem-ish) */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px;  --s-4: 16px;
+  --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px;
+
+  /* radii */
+  --r-sm: 8px;
+  --r-md: 14px;
+  --r-lg: 20px;
+
+  /* type scale */
+  --t-xs: 11px;
+  --t-sm: 13px;
+  --t-md: 15px;
+  --t-lg: 18px;
+  --t-xl: 28px;
+  --t-2xl: 38px;
+
+  /* color — zinc / slate base */
+  --bg-0: #07080c;            /* page bottom */
+  --bg-1: #0c0f17;            /* card */
+  --bg-2: #131826;            /* card raised */
+  --bg-3: #1a2030;            /* hover */
+  --line: rgba(148, 163, 184, 0.08);
+  --line-strong: rgba(148, 163, 184, 0.18);
+
+  --fg-0: #f1f5f9;
+  --fg-1: #cbd5e1;
+  --fg-2: #94a3b8;
+  --fg-3: #64748b;
+
+  /* accents */
+  --acc-iris: #818cf8;          /* indigo-400 */
+  --acc-iris-2: #a78bfa;        /* violet-400 */
+  --acc-cyan: #22d3ee;          /* cyan-400 */
+  --acc-emerald: #34d399;       /* emerald-400 */
+  --acc-amber: #fbbf24;         /* amber-400 */
+  --acc-rose: #fb7185;          /* rose-400 */
+
+  --grad-primary: linear-gradient(135deg, var(--acc-iris) 0%, var(--acc-cyan) 100%);
+  --grad-warm: linear-gradient(135deg, var(--acc-amber) 0%, var(--acc-rose) 100%);
+
+  --glow-iris: 0 0 16px rgba(129, 140, 248, 0.35);
+  --glow-emerald: 0 0 14px rgba(52, 211, 153, 0.35);
+  --glow-cyan: 0 0 14px rgba(34, 211, 238, 0.35);
+
+  /* font stack — number-friendly */
+  --font-sans: -apple-system, "SF Pro Display", "Inter", "PingFang SC",
+               "Helvetica Neue", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Menlo", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-sm);
+  color: var(--fg-0);
+  background: var(--bg-0);
+  /* P3-15: layered radial gradients + grid */
+  background-image:
+    radial-gradient(ellipse 1200px 600px at 20% 0%, rgba(129, 140, 248, 0.10), transparent 60%),
+    radial-gradient(ellipse 800px 500px at 100% 30%, rgba(34, 211, 238, 0.06), transparent 60%),
+    radial-gradient(ellipse 600px 400px at 50% 100%, rgba(167, 139, 250, 0.05), transparent 70%),
+    linear-gradient(rgba(148,163,184,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148,163,184,0.025) 1px, transparent 1px);
+  background-size: auto, auto, auto, 32px 32px, 32px 32px;
+  background-position: 0 0, 0 0, 0 0, 0 0, 0 0;
+  min-height: 100vh;
+  /* P3-16 tabular numerals everywhere */
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   Header (sticky)
+   ============================================================ */
+.app-header {
+  position: sticky; top: 0; z-index: 30;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--s-3) var(--s-6);
+  background: linear-gradient(180deg, rgba(7,8,12,0.95), rgba(7,8,12,0.7) 70%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: flex; align-items: center; gap: var(--s-3);
+}
+.brand-logo {
+  width: 36px; height: 36px;
+  border-radius: 10px;
+  background: var(--grad-primary);
+  display: grid; place-items: center;
+  box-shadow: var(--glow-iris);
+  flex-shrink: 0;
+}
+.brand-logo svg { width: 20px; height: 20px; color: var(--bg-0); }
+.brand-text h1 {
+  margin: 0; font-size: var(--t-md); font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.brand-text p {
+  margin: 1px 0 0 0; font-size: 10px; color: var(--fg-3);
+  letter-spacing: 1.5px; text-transform: uppercase;
+}
+
+.health-cluster {
+  display: flex; gap: var(--s-5); align-items: center;
+}
+.health-dot {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--t-xs); color: var(--fg-2);
+}
+.health-dot::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--acc-emerald);
+  box-shadow: 0 0 8px var(--acc-emerald);
+  /* P3-14: realtime pulse */
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.health-dot.warn::before { background: var(--acc-amber); box-shadow: 0 0 8px var(--acc-amber); }
+.health-dot.fail::before { background: var(--acc-rose); box-shadow: 0 0 8px var(--acc-rose); animation-duration: 1s; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.85); }
+}
+
+/* P0-2: header toggles — emerald active */
+.header-toggles { display: flex; gap: var(--s-2); }
+.h-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; font-size: var(--t-xs);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: rgba(148, 163, 184, 0.04);
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+.h-toggle:hover { background: rgba(148, 163, 184, 0.08); color: var(--fg-1); }
+.h-toggle.active {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--acc-emerald);
+  border-color: rgba(52, 211, 153, 0.45);
+  box-shadow: var(--glow-emerald);
+}
+.h-toggle .ico { font-size: 13px; line-height: 1; }
+
+/* ============================================================
+   Hero env strip — P0-4: marquee overflow safe
+   ============================================================ */
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-6) 0;
+}
+.env-cards {
+  display: grid;
+  grid-template-columns: repeat(5, max-content);
+  gap: var(--s-2);
+  align-items: stretch;
+}
+.env-card {
+  display: flex; align-items: center; gap: var(--s-2);
+  padding: 8px 14px; height: 44px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  white-space: nowrap;
+}
+.env-card .ico { font-size: 16px; opacity: 0.9; }
+.env-card .label { color: var(--fg-3); font-size: var(--t-xs); }
+.env-card .val {
+  font-family: var(--font-mono);
+  font-weight: 700; font-size: var(--t-md);
+}
+.env-card .val .unit { font-size: var(--t-xs); color: var(--fg-2); margin-left: 1px; font-weight: 400; }
+.env-card .sub { color: var(--fg-3); font-size: 10px; margin-left: 4px; }
+
+.env-temp .val { color: var(--acc-amber); }
+.env-humidity .val { color: var(--acc-cyan); }
+.env-light .val { color: #facc15; }
+.env-people .val { color: var(--acc-emerald); }
+.env-ac .val { color: var(--acc-iris); }
+
+/* marquee — own row, never clipped */
+.env-marquee {
+  display: flex; align-items: center; gap: var(--s-3);
+  height: 32px; padding: 0 var(--s-4);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden; min-width: 0; /* allow flex to shrink */
+}
+.env-marquee .tag {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: 1px;
+  color: var(--acc-rose);
+}
+.env-marquee .tag::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--acc-rose);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.marquee-track {
+  display: inline-flex; gap: var(--s-5);
+  animation: marquee 35s linear infinite;
+  font-size: var(--t-xs);
+}
+.marquee-item { display: inline-flex; gap: 4px; align-items: center; color: var(--fg-2); }
+.marquee-item .room { color: var(--fg-3); }
+.marquee-item .v { color: var(--fg-0); font-family: var(--font-mono); font-weight: 600; }
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+/* ============================================================
+   Main grid
+   ============================================================ */
+.main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: var(--s-4);
+  padding: var(--s-4) var(--s-6);
+}
+
+.card {
+  background: linear-gradient(180deg, var(--bg-1), var(--bg-1));
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--s-5);
+}
+.card-hd {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: var(--s-3);
+}
+.card-title {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: var(--t-md); font-weight: 600; letter-spacing: 0.3px;
+}
+.card-title .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--acc-iris); box-shadow: var(--glow-iris);
+  animation: pulse 2.6s ease-in-out infinite;
+}
+.card-meta {
+  font-size: var(--t-xs); color: var(--fg-3);
+  font-family: var(--font-mono);
+}
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 12px;
+  font-size: 10px; letter-spacing: 0.5px;
+  background: rgba(129, 140, 248, 0.12);
+  color: var(--acc-iris);
+  border: 1px solid rgba(129, 140, 248, 0.25);
+}
+.badge.stale {
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--fg-3);
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+/* ============================================================
+   Camera + AI scene
+   ============================================================ */
+.camera-card { padding: 0; overflow: hidden; }
+.camera-frame {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  overflow: hidden;
+}
+.camera-frame::after {
+  /* subtle scanline noise */
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 2px);
+  mix-blend-mode: overlay;
+}
+.camera-feed {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+  filter: contrast(1.04) saturate(1.08);
+}
+
+/* P0-1: signal-weak overlay (mock activated in this demo) */
+.signal-overlay {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--s-3);
+  background: radial-gradient(ellipse at center, rgba(7,8,12,0.55), rgba(7,8,12,0.92) 70%);
+  backdrop-filter: blur(2px);
+  color: var(--fg-1);
+}
+.signal-overlay .icon {
+  font-size: 32px; color: var(--acc-amber);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.signal-overlay .msg {
+  font-size: var(--t-md); letter-spacing: 0.5px;
+}
+.signal-overlay .sub {
+  font-size: var(--t-xs); color: var(--fg-3); font-family: var(--font-mono);
+}
+
+.cam-overlay-tl, .cam-overlay-tr, .cam-overlay-bl, .cam-overlay-br {
+  position: absolute; padding: 4px 10px;
+  font-size: 10px; letter-spacing: 1px;
+  font-family: var(--font-mono);
+  background: rgba(7, 8, 12, 0.6);
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
+  z-index: 2;
+}
+.cam-overlay-tl { top: 12px; left: 12px;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(220, 38, 38, 0.18);
+  color: var(--acc-rose);
+  border: 1px solid rgba(251, 113, 133, 0.4);
+}
+.cam-overlay-tl::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--acc-rose);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.cam-overlay-tr { top: 12px; right: 12px; color: var(--fg-2); background: rgba(7,8,12,0.5); }
+
+.camera-controls {
+  display: flex; gap: var(--s-2); padding: var(--s-3) var(--s-4);
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.btn-ghost, .btn-primary, .btn-danger {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px;
+  font-size: var(--t-xs); font-weight: 500;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.18s ease;
+  font-family: inherit;
+}
+.btn-ghost {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--fg-1);
+}
+.btn-ghost:hover { background: var(--bg-3); }
+
+/* P0-3: primary action — iris/cyan grad, NOT red */
+.btn-primary {
+  background: var(--grad-primary);
+  color: var(--bg-0);
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(129, 140, 248, 0.35);
+}
+.btn-primary:hover { box-shadow: 0 6px 20px rgba(129, 140, 248, 0.5); transform: translateY(-1px); }
+
+.btn-danger {
+  background: rgba(251, 113, 133, 0.12);
+  color: var(--acc-rose);
+  border-color: rgba(251, 113, 133, 0.3);
+}
+.btn-danger:hover { background: rgba(251, 113, 133, 0.2); }
+
+/* AI scene panel */
+.ai-scene-card .scene-text {
+  position: relative;
+  padding: var(--s-3) var(--s-4);
+  background: linear-gradient(90deg, rgba(129,140,248,0.06), transparent);
+  border-left: 2px solid var(--acc-iris);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  font-size: var(--t-sm);
+  color: var(--fg-1);
+  line-height: 1.55;
+  margin-bottom: var(--s-3);
+}
+.scene-tags {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-bottom: var(--s-4);
+}
+.scene-tag {
+  padding: 3px 10px;
+  border-radius: 14px;
+  font-size: 10px; letter-spacing: 0.3px;
+  background: rgba(34, 211, 238, 0.08);
+  color: var(--acc-cyan);
+  border: 1px solid rgba(34, 211, 238, 0.18);
+}
+.scene-tag.primary { background: rgba(129, 140, 248, 0.14); color: var(--acc-iris); border-color: rgba(129, 140, 248, 0.3); }
+.scene-tag.muted { background: rgba(148,163,184,0.06); color: var(--fg-2); border-color: var(--line); }
+
+/* P2-10: bulk action bar + suggestion list w/ shortcuts */
+.bulk-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 12px;
+  margin-bottom: var(--s-2);
+  font-size: var(--t-xs); color: var(--fg-2);
+  background: rgba(129, 140, 248, 0.04);
+  border: 1px dashed rgba(129, 140, 248, 0.2);
+  border-radius: var(--r-sm);
+}
+.bulk-bar .actions { display: flex; gap: 6px; }
+.bulk-bar .micro-btn {
+  font-size: 10px; padding: 3px 8px; border-radius: 4px;
+  border: 1px solid var(--line-strong); background: transparent;
+  color: var(--fg-1); cursor: pointer; font-family: inherit;
+}
+.bulk-bar .micro-btn:hover { background: var(--bg-3); }
+.bulk-bar .micro-btn.primary { background: var(--acc-iris); color: var(--bg-0); border-color: transparent; }
+
+.sg-list { display: flex; flex-direction: column; gap: 6px; }
+.sg-item {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 10px 14px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  transition: all 0.18s ease;
+}
+.sg-item:hover { background: rgba(129, 140, 248, 0.06); border-color: rgba(129, 140, 248, 0.25); }
+.sg-key {
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px; color: var(--fg-2);
+}
+.sg-text { font-size: var(--t-sm); color: var(--fg-1); }
+.sg-text .ico { margin-right: 6px; }
+
+/* ============================================================
+   Voice command input — P2-11: simplified placeholder + chips
+   ============================================================ */
+.voice-card .v-input-row {
+  display: flex; gap: var(--s-2); margin-bottom: var(--s-3);
+}
+.voice-input {
+  flex: 1; min-width: 0;
+  padding: 10px 14px;
+  font-size: var(--t-sm);
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--fg-0);
+  outline: none;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+.voice-input:focus {
+  border-color: var(--acc-iris);
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.18);
+}
+.voice-input::placeholder { color: var(--fg-3); }
+.voice-send {
+  padding: 0 18px;
+  background: var(--grad-primary);
+  color: var(--bg-0);
+  border: none; border-radius: var(--r-sm);
+  font-weight: 600; cursor: pointer;
+}
+
+.v-chips {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.v-chip {
+  padding: 4px 10px; font-size: 11px;
+  background: rgba(34, 211, 238, 0.06);
+  border: 1px solid rgba(34, 211, 238, 0.2);
+  color: var(--acc-cyan);
+  border-radius: 14px;
+  cursor: pointer;
+}
+.v-chip:hover { background: rgba(34, 211, 238, 0.12); }
+
+/* P1-8: voice transcript with chips & relative time */
+.transcript-card .tr-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--s-3); }
+.tr-list { display: flex; flex-direction: column; gap: var(--s-2); }
+.tr-item {
+  display: grid; grid-template-columns: 56px 64px 1fr; gap: var(--s-3);
+  align-items: start;
+  padding: 8px 12px;
+  background: rgba(15, 23, 42, 0.4);
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+.tr-item.wake { border-color: var(--acc-iris); background: rgba(129, 140, 248, 0.06); }
+.tr-item.voice { border-color: var(--acc-cyan); }
+.tr-item.ambient { border-color: var(--fg-3); opacity: 0.7; }
+.tr-time { font-family: var(--font-mono); font-size: 10px; color: var(--fg-3); padding-top: 2px; }
+.tr-tag {
+  font-size: 10px; padding: 2px 6px; border-radius: 4px;
+  background: rgba(148, 163, 184, 0.1); color: var(--fg-2);
+  text-align: center; align-self: start;
+}
+.tr-item.wake .tr-tag { background: rgba(129, 140, 248, 0.18); color: var(--acc-iris); }
+.tr-item.voice .tr-tag { background: rgba(34, 211, 238, 0.15); color: var(--acc-cyan); }
+.tr-text { font-size: var(--t-sm); color: var(--fg-1); line-height: 1.45; }
+
+/* ============================================================
+   Stats bar — P1-5 redesigned 4 cards (no redundant "光照")
+   ============================================================ */
+.stats-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--s-3);
+  padding: 0 var(--s-6) var(--s-4);
+}
+.stat {
+  position: relative;
+  padding: var(--s-4);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.stat .stat-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: var(--s-2);
+}
+.stat .stat-label {
+  font-size: var(--t-xs); color: var(--fg-3); letter-spacing: 1px; text-transform: uppercase;
+}
+.stat .stat-icon {
+  width: 28px; height: 28px; border-radius: 6px;
+  display: grid; place-items: center;
+  background: rgba(129, 140, 248, 0.1);
+  color: var(--acc-iris);
+  font-size: 14px;
+}
+.stat-num {
+  font-family: var(--font-mono);
+  font-size: var(--t-2xl); font-weight: 700; line-height: 1;
+  letter-spacing: -0.5px;
+}
+.stat-num .of { color: var(--fg-3); font-size: var(--t-md); font-weight: 500; }
+.stat-sub {
+  margin-top: 6px;
+  font-size: var(--t-xs); color: var(--fg-2);
+  display: flex; gap: 8px; align-items: center;
+}
+.stat-sub .delta-up { color: var(--acc-emerald); }
+.stat-sub .delta-down { color: var(--acc-rose); }
+
+/* sparkline */
+.spark {
+  margin-top: 10px;
+  height: 28px;
+  display: flex; align-items: flex-end; gap: 2px;
+}
+.spark .bar {
+  flex: 1; min-width: 2px;
+  background: linear-gradient(180deg, var(--acc-iris) 0%, rgba(129,140,248,0.2) 100%);
+  border-radius: 1px;
+  opacity: 0.85;
+}
+.spark .bar.dim { background: linear-gradient(180deg, rgba(148,163,184,0.4), rgba(148,163,184,0.1)); }
+.spark .bar.warm { background: linear-gradient(180deg, var(--acc-amber), rgba(251,191,36,0.2)); }
+
+/* room dist mini-bar */
+.room-dist {
+  margin-top: 10px;
+  display: flex; gap: 1px; height: 6px;
+  border-radius: 2px; overflow: hidden;
+  background: rgba(148,163,184,0.08);
+}
+.room-dist .seg { background: var(--acc-amber); }
+.room-dist .seg.off { background: rgba(148,163,184,0.15); }
+.room-dist .seg + .seg { margin-left: 0; }
+
+/* ============================================================
+   Devices section — P1-6: simplified naming + sticky tabs
+   ============================================================ */
+.devices-section { padding: 0 var(--s-6) var(--s-8); }
+.dev-toolbar {
+  position: sticky; top: 60px; z-index: 10;
+  background: var(--bg-0);
+  padding: var(--s-3) 0;
+  /* P2-12 */
+}
+.dev-search {
+  width: 100%;
+  padding: 10px 14px; padding-left: 36px;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  color: var(--fg-0);
+  font-size: var(--t-sm);
+  outline: none;
+  font-family: inherit;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23667085' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.3-4.3'/></svg>");
+  background-repeat: no-repeat;
+  background-position: 12px center;
+  margin-bottom: var(--s-3);
+}
+.dev-tabs {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: var(--s-2);
+}
+.dev-tab {
+  padding: 6px 12px; font-size: var(--t-xs);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--fg-2);
+  cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.dev-tab .count { font-family: var(--font-mono); color: var(--fg-3); }
+.dev-tab.active {
+  background: rgba(129, 140, 248, 0.1);
+  border-color: rgba(129, 140, 248, 0.4);
+  color: var(--fg-0);
+}
+.dev-tab.active .count { color: var(--acc-iris); }
+.dev-rooms { display: flex; gap: 4px; flex-wrap: wrap; }
+.dev-room {
+  padding: 4px 10px; font-size: 11px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.dev-room.active { background: rgba(34, 211, 238, 0.08); border-color: rgba(34, 211, 238, 0.25); color: var(--acc-cyan); }
+
+.dev-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}
+.dev-card {
+  position: relative;
+  padding: var(--s-3) var(--s-4);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+.dev-card:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.dev-card.on { border-color: rgba(251, 191, 36, 0.35); }
+.dev-card.on::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(ellipse at top, rgba(251,191,36,0.06), transparent 60%);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.dev-row {
+  display: flex; justify-content: space-between; align-items: flex-start;
+}
+.dev-icon {
+  width: 32px; height: 32px; border-radius: 8px;
+  display: grid; place-items: center;
+  background: rgba(148, 163, 184, 0.06);
+  font-size: 16px;
+}
+.dev-card.on .dev-icon { background: rgba(251, 191, 36, 0.12); color: var(--acc-amber); }
+
+.dev-toggle {
+  width: 36px; height: 20px; border-radius: 10px;
+  background: rgba(148, 163, 184, 0.15);
+  position: relative;
+  flex-shrink: 0; margin-top: 6px;
+  transition: background 0.2s;
+}
+.dev-toggle::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--fg-2);
+  transition: all 0.2s;
+}
+.dev-card.on .dev-toggle { background: var(--acc-emerald); }
+.dev-card.on .dev-toggle::after { background: white; left: 18px; }
+
+.dev-name {
+  margin-top: var(--s-2);
+  font-size: var(--t-sm); color: var(--fg-0); font-weight: 500;
+  line-height: 1.3;
+  /* P1-6: only friendly name */
+}
+.dev-meta {
+  margin-top: 4px; display: flex; align-items: center; gap: 6px;
+  font-size: 10px; color: var(--fg-3);
+}
+.dev-meta .physical { font-family: var(--font-mono); color: var(--fg-3); }
+.dev-meta .state { color: var(--fg-2); }
+.dev-card.on .dev-meta .state { color: var(--acc-amber); }
+
+/* ============================================================
+   Footer hint
+   ============================================================ */
+.kbd-hint {
+  position: fixed; right: var(--s-5); bottom: var(--s-5);
+  padding: 6px 12px;
+  background: rgba(7, 8, 12, 0.85);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font-size: 10px; color: var(--fg-3); font-family: var(--font-mono);
+  display: flex; gap: 12px;
+  z-index: 40;
+  backdrop-filter: blur(10px);
+}
+.kbd-hint kbd {
+  font-family: inherit;
+  padding: 1px 5px; background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  color: var(--fg-1);
+}
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     Header — P0-2: emerald active toggles, custom SVG logo
+     ============================================================ -->
+<header class="app-header">
+  <div class="brand">
+    <div class="brand-logo">
+      <!-- P3-17: custom SVG logo (no emoji) -->
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12 L12 3 L21 12"/>
+        <path d="M5 10 V20 H19 V10"/>
+        <circle cx="12" cy="14" r="2" fill="currentColor"/>
+      </svg>
+    </div>
+    <div class="brand-text">
+      <h1>AI 智能家居</h1>
+      <p>VISUAL CONTROL CENTER</p>
+    </div>
+  </div>
+
+  <div class="health-cluster">
+    <span class="health-dot">摄像头</span>
+    <span class="health-dot">智能中枢</span>
+    <span class="health-dot">AI 引擎</span>
+  </div>
+
+  <div class="header-toggles">
+    <button class="h-toggle active" title="RTSP 直连"><span class="ico">📹</span> RTSP</button>
+    <button class="h-toggle active" title="小爱播报"><span class="ico">🔊</span> 小爱</button>
+    <button class="h-toggle" title="语音监听"><span class="ico">🎙</span> 语音 关</button>
+  </div>
+</header>
+
+<!-- ============================================================
+     Hero env strip — P0-4: marquee on its own row
+     ============================================================ -->
+<section class="hero">
+  <div class="env-cards">
+    <div class="env-card env-temp">
+      <span class="ico">🌡</span>
+      <span class="label">室温</span>
+      <span class="val">27.5<span class="unit">°C</span></span>
+      <span class="sub">低 26 / 高 28 · 6 间</span>
+    </div>
+    <div class="env-card env-humidity">
+      <span class="ico">💧</span>
+      <span class="label">湿度</span>
+      <span class="val">55<span class="unit">%</span></span>
+      <span class="sub">2 路</span>
+    </div>
+    <div class="env-card env-light">
+      <span class="ico">☀️</span>
+      <span class="label">光照</span>
+      <span class="val">1293<span class="unit">lx</span></span>
+      <span class="sub">均 179</span>
+    </div>
+    <div class="env-card env-people">
+      <span class="ico">👥</span>
+      <span class="label">在场</span>
+      <span class="val">2<span class="unit">/10</span></span>
+      <span class="sub">活</span>
+    </div>
+    <div class="env-card env-ac">
+      <span class="ico">❄️</span>
+      <span class="label">空调</span>
+      <span class="val">2<span class="unit">/6</span></span>
+      <span class="sub">开</span>
+    </div>
+  </div>
+  <div class="env-marquee">
+    <div class="tag">LIVE</div>
+    <div class="marquee-track">
+      <span class="marquee-item"><span class="room">客厅</span><span class="v">27.8°</span></span>
+      <span class="marquee-item"><span class="room">主卧</span><span class="v">26.5°</span></span>
+      <span class="marquee-item"><span class="room">书房</span><span class="v">26.0°</span></span>
+      <span class="marquee-item"><span class="room">次卧</span><span class="v">28.2°</span></span>
+      <span class="marquee-item"><span class="room">北卧</span><span class="v">28.1°</span></span>
+      <span class="marquee-item"><span class="room">餐厅</span><span class="v">28.0°</span></span>
+      <span class="marquee-item"><span class="room">客厅</span><span class="v">27.8°</span></span>
+      <span class="marquee-item"><span class="room">主卧</span><span class="v">26.5°</span></span>
+      <span class="marquee-item"><span class="room">书房</span><span class="v">26.0°</span></span>
+      <span class="marquee-item"><span class="room">次卧</span><span class="v">28.2°</span></span>
+      <span class="marquee-item"><span class="room">北卧</span><span class="v">28.1°</span></span>
+      <span class="marquee-item"><span class="room">餐厅</span><span class="v">28.0°</span></span>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     Main grid: camera | AI scene + voice
+     ============================================================ -->
+<main class="main">
+  <!-- left: camera -->
+  <section class="card camera-card">
+    <div class="camera-frame">
+      <!-- normal feed (mock with gradient placeholder) -->
+      <div class="camera-feed" style="background:
+        linear-gradient(135deg, #1e293b 0%, #0f172a 50%, #1e293b 100%);
+        background-image: url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22800%22 height=%22450%22><rect fill=%22%231e293b%22 width=%22800%22 height=%22450%22/><circle cx=%22150%22 cy=%22200%22 r=%2280%22 fill=%22%23334155%22 opacity=%220.6%22/><rect x=%22300%22 y=%22120%22 width=%22300%22 height=%22200%22 fill=%22%23475569%22 opacity=%220.4%22/><rect x=%22550%22 y=%22250%22 width=%22120%22 height=%22120%22 fill=%22%2364748b%22 opacity=%220.5%22/></svg>');
+        background-size: cover;"></div>
+
+      <div class="cam-overlay-tl">直播 · 萤石</div>
+      <div class="cam-overlay-tr">14:40:32 · 8 fps</div>
+
+      <!-- P0-1: signal-weak overlay shown when overexpose detected -->
+      <div class="signal-overlay" id="signalOverlay">
+        <div class="icon">📡</div>
+        <div class="msg">画面信号弱，正在重建关键帧</div>
+        <div class="sub">下次重试 · 3s</div>
+      </div>
+    </div>
+    <div class="camera-controls">
+      <button class="btn-ghost">↻ 刷新</button>
+      <button class="btn-primary">⚡ AI 分析</button>
+      <span style="margin-left:auto; font-size: 11px; color: var(--fg-3); align-self:center;">
+        画质自适应 · 当前 720p H.264
+      </span>
+    </div>
+  </section>
+
+  <!-- right: AI scene + voice + transcript -->
+  <div style="display: flex; flex-direction: column; gap: var(--s-4);">
+    <!-- AI scene panel -->
+    <section class="card ai-scene-card">
+      <div class="card-hd">
+        <div class="card-title"><span class="dot"></span>AI 场景分析</div>
+        <div class="card-meta">
+          <span class="badge">自动</span>
+          <!-- P2-9: relative time + stale signal -->
+          <span class="badge stale" id="aiStaleBadge">⏱ 1m 47s 前</span>
+        </div>
+      </div>
+
+      <div class="scene-text">
+        客厅一体空间，光线较暗，<strong>1 人在窗前活动</strong>，自然光不足。
+      </div>
+
+      <div class="scene-tags">
+        <span class="scene-tag primary">🛋 客厅</span>
+        <span class="scene-tag primary">👤 有人</span>
+        <span class="scene-tag">🌙 暗</span>
+        <span class="scene-tag muted">🪟 窗帘关</span>
+        <span class="scene-tag muted">环境安静</span>
+      </div>
+
+      <!-- P2-10: bulk action bar -->
+      <div class="bulk-bar">
+        <span>3 条建议待执行</span>
+        <div class="actions">
+          <button class="micro-btn primary">✓ 全部执行</button>
+          <button class="micro-btn">✗ 全部忽略</button>
+        </div>
+      </div>
+
+      <div class="sg-list">
+        <div class="sg-item">
+          <span class="sg-key">1</span>
+          <span class="sg-text"><span class="ico">💡</span>打开客厅主灯以提升照明</span>
+          <button class="btn-primary" style="padding: 5px 12px; font-size: 11px;">执行</button>
+        </div>
+        <div class="sg-item">
+          <span class="sg-key">2</span>
+          <span class="sg-text"><span class="ico">🪟</span>拉开通往阳台的窗帘以引入自然光</span>
+          <button class="btn-primary" style="padding: 5px 12px; font-size: 11px;">执行</button>
+        </div>
+        <div class="sg-item">
+          <span class="sg-key">3</span>
+          <span class="sg-text"><span class="ico">❄️</span>客厅空调调到 26°制冷</span>
+          <button class="btn-primary" style="padding: 5px 12px; font-size: 11px;">执行</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Voice command -->
+    <section class="card voice-card">
+      <div class="card-hd">
+        <div class="card-title"><span class="dot"></span>语音指令</div>
+        <div class="card-meta">NLP</div>
+      </div>
+      <div class="v-input-row">
+        <!-- P2-11: simplified placeholder -->
+        <input class="voice-input" placeholder="对家说点什么…">
+        <button class="voice-send">发送</button>
+      </div>
+      <!-- P2-11: chip presets replace verbose hint -->
+      <div class="v-chips">
+        <span class="v-chip">💡 打开客厅灯</span>
+        <span class="v-chip">🎬 我想看电影</span>
+        <span class="v-chip">❄️ 调到 24 度</span>
+        <span class="v-chip">🪟 拉开窗帘</span>
+        <span class="v-chip">🤖 现在几点</span>
+      </div>
+    </section>
+  </div>
+</main>
+
+<!-- ============================================================
+     Voice transcript card — P1-8
+     ============================================================ -->
+<section style="padding: 0 var(--s-6) var(--s-4);">
+  <div class="card transcript-card">
+    <div class="tr-header">
+      <div class="card-title"><span class="dot"></span>实时语音转写</div>
+      <span class="card-meta">最近 5 条</span>
+    </div>
+    <div class="tr-list">
+      <div class="tr-item wake">
+        <span class="tr-time">3 秒前</span>
+        <span class="tr-tag">唤醒</span>
+        <span class="tr-text">「王管家，客厅太热了」 → 已开客厅空调 26°制冷</span>
+      </div>
+      <div class="tr-item voice">
+        <span class="tr-time">38 秒前</span>
+        <span class="tr-tag">语音</span>
+        <span class="tr-text">背景中有持续的滴答声和轻微的敲击声。</span>
+      </div>
+      <div class="tr-item ambient">
+        <span class="tr-time">2 分钟前</span>
+        <span class="tr-tag">环境</span>
+        <span class="tr-text">空调出风声、远处车流声。</span>
+      </div>
+      <div class="tr-item wake">
+        <span class="tr-time">4 分钟前</span>
+        <span class="tr-tag">唤醒</span>
+        <span class="tr-text">「王管家，现在几点了」 → "下午 2 点 36 分"</span>
+      </div>
+      <div class="tr-item ambient">
+        <span class="tr-time">7 分钟前</span>
+        <span class="tr-tag">环境</span>
+        <span class="tr-text">无明显语音活动。</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     Stats bar — P1-5: 4 redesigned cards
+     ============================================================ -->
+<section class="stats-bar">
+  <div class="stat">
+    <div class="stat-row">
+      <span class="stat-label">设备总数</span>
+      <span class="stat-icon">⚙</span>
+    </div>
+    <div class="stat-num">124</div>
+    <div class="stat-sub">在线 16 · <span class="delta-up">↑ 12%</span> · 24h</div>
+    <div class="spark">
+      <div class="bar dim" style="height: 30%"></div>
+      <div class="bar dim" style="height: 35%"></div>
+      <div class="bar dim" style="height: 28%"></div>
+      <div class="bar" style="height: 55%"></div>
+      <div class="bar" style="height: 60%"></div>
+      <div class="bar" style="height: 50%"></div>
+      <div class="bar" style="height: 70%"></div>
+      <div class="bar" style="height: 65%"></div>
+      <div class="bar" style="height: 80%"></div>
+      <div class="bar" style="height: 90%"></div>
+      <div class="bar" style="height: 85%"></div>
+      <div class="bar" style="height: 100%"></div>
+    </div>
+  </div>
+
+  <div class="stat">
+    <div class="stat-row">
+      <span class="stat-label">灯光</span>
+      <span class="stat-icon" style="background: rgba(251,191,36,0.1); color: var(--acc-amber);">💡</span>
+    </div>
+    <div class="stat-num">3<span class="of"> / 52</span></div>
+    <div class="stat-sub">3 间房亮 · <span style="color:var(--fg-3)">客厅 · 餐厅 · 玄关</span></div>
+    <div class="room-dist">
+      <div class="seg" style="flex:1"></div>
+      <div class="seg off" style="flex:3"></div>
+      <div class="seg" style="flex:1"></div>
+      <div class="seg off" style="flex:6"></div>
+      <div class="seg" style="flex:1"></div>
+      <div class="seg off" style="flex:4"></div>
+    </div>
+  </div>
+
+  <div class="stat">
+    <div class="stat-row">
+      <span class="stat-label">空调</span>
+      <span class="stat-icon" style="background: rgba(129,140,248,0.1); color: var(--acc-iris);">❄️</span>
+    </div>
+    <div class="stat-num">2<span class="of"> / 6</span></div>
+    <div class="stat-sub">书房 26°制冷 · 次卧 26°制冷</div>
+    <div class="spark">
+      <div class="bar warm" style="height: 60%"></div>
+      <div class="bar warm" style="height: 70%"></div>
+      <div class="bar warm" style="height: 65%"></div>
+      <div class="bar warm" style="height: 75%"></div>
+      <div class="bar warm" style="height: 80%"></div>
+      <div class="bar warm" style="height: 85%"></div>
+      <div class="bar warm" style="height: 90%"></div>
+      <div class="bar warm" style="height: 100%"></div>
+    </div>
+  </div>
+
+  <div class="stat">
+    <div class="stat-row">
+      <span class="stat-label">自动化</span>
+      <span class="stat-icon" style="background: rgba(52,211,153,0.1); color: var(--acc-emerald);">🤖</span>
+    </div>
+    <div class="stat-num">3<span class="of"> / 5</span></div>
+    <div class="stat-sub">24h 触发 7 次 · <span class="delta-up">↑ 2</span></div>
+    <div class="spark">
+      <div class="bar dim" style="height: 0%"></div>
+      <div class="bar" style="height: 45%; background: linear-gradient(180deg, var(--acc-emerald), rgba(52,211,153,0.2));"></div>
+      <div class="bar dim" style="height: 0%"></div>
+      <div class="bar" style="height: 60%; background: linear-gradient(180deg, var(--acc-emerald), rgba(52,211,153,0.2));"></div>
+      <div class="bar" style="height: 30%; background: linear-gradient(180deg, var(--acc-emerald), rgba(52,211,153,0.2));"></div>
+      <div class="bar dim" style="height: 0%"></div>
+      <div class="bar" style="height: 80%; background: linear-gradient(180deg, var(--acc-emerald), rgba(52,211,153,0.2));"></div>
+      <div class="bar dim" style="height: 0%"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     Devices — P1-6: simplified naming, P2-12: sticky tabs
+     ============================================================ -->
+<section class="devices-section">
+  <div class="card" style="padding: var(--s-4) var(--s-5); margin-bottom: var(--s-3);">
+    <div class="card-title" style="margin-bottom: var(--s-3);"><span class="dot"></span>设备控制</div>
+
+    <div class="dev-toolbar" style="position: static; padding: 0;">
+      <input class="dev-search" placeholder="搜索设备…">
+      <div class="dev-tabs">
+        <span class="dev-tab active">全部 <span class="count">124</span></span>
+        <span class="dev-tab">💡 灯光 <span class="count">52</span></span>
+        <span class="dev-tab">🪟 窗帘 <span class="count">10</span></span>
+        <span class="dev-tab">❄️ 空调 <span class="count">6</span></span>
+        <span class="dev-tab">🔌 插座 <span class="count">10</span></span>
+        <span class="dev-tab">🎵 影音 <span class="count">6</span></span>
+        <span class="dev-tab">🌬 风扇 <span class="count">1</span></span>
+        <span class="dev-tab">🤖 扫地 <span class="count">1</span></span>
+      </div>
+      <div class="dev-rooms">
+        <span class="dev-room active">全部</span>
+        <span class="dev-room">客厅</span>
+        <span class="dev-room">主卧</span>
+        <span class="dev-room">次卧</span>
+        <span class="dev-room">北卧</span>
+        <span class="dev-room">书房</span>
+        <span class="dev-room">厨房</span>
+        <span class="dev-room">餐厅</span>
+        <span class="dev-room">阳台</span>
+        <span class="dev-room">玄关</span>
+        <span class="dev-room">走廊</span>
+      </div>
+    </div>
+
+    <!-- P1-6: simplified device cards — primary friendly name + small physical chip -->
+    <div class="dev-grid">
+      <div class="dev-card on">
+        <div class="dev-row">
+          <div class="dev-icon">💡</div>
+          <div class="dev-toggle"></div>
+        </div>
+        <div class="dev-name">餐厅灯</div>
+        <div class="dev-meta">
+          <span class="state">已开启</span>
+          <span class="physical" title="物理回路">客厅中两键</span>
+        </div>
+      </div>
+      <div class="dev-card">
+        <div class="dev-row">
+          <div class="dev-icon">💡</div>
+          <div class="dev-toggle"></div>
+        </div>
+        <div class="dev-name">客厅主灯</div>
+        <div class="dev-meta"><span class="state">已关闭</span><span class="physical">客厅左三键</span></div>
+      </div>
+      <div class="dev-card">
+        <div class="dev-row">
+          <div class="dev-icon">💡</div>
+          <div class="dev-toggle"></div>
+        </div>
+        <div class="dev-name">阳台筒灯</div>
+        <div class="dev-meta"><span class="state">已关闭</span><span class="physical">客厅左三键</span></div>
+      </div>
+      <div class="dev-card">
+        <div class="dev-row">
+          <div class="dev-icon">💡</div>
+          <div class="dev-toggle"></div>
+        </div>
+        <div class="dev-name">中间筒灯</div>
+        <div class="dev-meta"><span class="state">已关闭</span><span class="physical">客厅两键</span></div>
+      </div>
+      <div class="dev-card">
+        <div class="dev-row">
+          <div class="dev-icon">❄️</div>
+          <div class="dev-toggle"></div>
+        </div>
+        <div class="dev-name">客厅空调</div>
+        <div class="dev-meta"><span class="state">28°C · 已关闭</span></div>
+      </div>
+      <div class="dev-card on">
+        <div class="dev-row">
+          <div class="dev-icon">❄️</div>
+          <div class="dev-toggle"></div>
+        </div>
+        <div class="dev-name">书房空调</div>
+        <div class="dev-meta"><span class="state">26°C · 制冷</span></div>
+      </div>
+      <div class="dev-card">
+        <div class="dev-row">
+          <div class="dev-icon">🪟</div>
+          <div class="dev-toggle"></div>
+        </div>
+        <div class="dev-name">客厅窗帘</div>
+        <div class="dev-meta"><span class="state">0%</span></div>
+      </div>
+      <div class="dev-card">
+        <div class="dev-row">
+          <div class="dev-icon">🪟</div>
+          <div class="dev-toggle"></div>
+        </div>
+        <div class="dev-name">主卧窗帘</div>
+        <div class="dev-meta"><span class="state">0%</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- P2: keyboard hint -->
+<div class="kbd-hint">
+  <span><kbd>Space</kbd> AI 分析</span>
+  <span><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> 应用建议</span>
+  <span><kbd>/</kbd> 聚焦语音</span>
+  <span><kbd>?</kbd> 全部快捷键</span>
+</div>
+
+<script>
+  // P3-14: count-up demo on the stat numbers (purely visual)
+  function animateNum(el, target, duration = 800) {
+    const start = 0;
+    const t0 = performance.now();
+    function step(now) {
+      const p = Math.min(1, (now - t0) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      el.firstChild.nodeValue = Math.round(start + (target - start) * eased);
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  // Optional demo: trigger count-up on first paint
+  // (kept lightweight — no real binding needed for mock)
+  document.querySelectorAll('.stat-num').forEach(el => {
+    const txt = el.firstChild.nodeValue;
+    const n = parseInt(txt, 10);
+    if (!isNaN(n)) {
+      el.firstChild.nodeValue = '0';
+      animateNum(el, n);
+    }
+  });
+</script>
+
+</body>
+</html>

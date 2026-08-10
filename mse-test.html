@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>MSE Test</title>
+<style>body{background:#111;color:#fff;font-family:monospace}#log{white-space:pre-wrap;font-size:11px}</style>
+</head><body>
+<video id="v" autoplay muted playsinline style="width:560px;background:#000"></video>
+<div id="status">init...</div><div id="log"></div>
+<script>
+const v=document.getElementById('v'),log=document.getElementById('log'),status=document.getElementById('status');
+const L=(...a)=>{log.textContent+=Date.now()+' '+a.join(' ')+'\n';console.log(...a)};
+(async()=>{
+  const c=await fetch('/api/stream/codec').then(r=>r.json());
+  L('codec',JSON.stringify(c));
+  const mime=c.mseMime||'video/mp4; codecs="avc1.42E033"';
+  L('isTypeSupported',mime,MediaSource.isTypeSupported(mime));
+  if(!MediaSource.isTypeSupported(mime)){
+    const fb='video/mp4; codecs="avc1.42E033"';
+    L('fallback',fb,MediaSource.isTypeSupported(fb));
+  }
+  const ms=new MediaSource();v.src=URL.createObjectURL(ms);
+  let firstAt=0,bytes=0,frames=0;
+  ms.addEventListener('sourceopen',async()=>{
+    L('sourceopen ready');
+    const sb=ms.addSourceBuffer(mime);
+    const queue=[];
+    const append=()=>{if(sb.updating||!queue.length)return;try{sb.appendBuffer(queue.shift())}catch(e){L('apperr',e.message)}};
+    sb.addEventListener('updateend',()=>{append();if(!firstAt&&v.buffered.length){firstAt=Date.now();status.textContent='✓ first buffer';L('first buffered.end='+v.buffered.end(0))}});
+    const r=await fetch('/api/stream/fmp4');L('http',r.status);
+    const reader=r.body.getReader();
+    while(true){const {value,done}=await reader.read();if(done)break;bytes+=value.byteLength;frames++;queue.push(value);append();if(frames<5)L('chunk #'+frames,value.byteLength,'b');}
+  });
+  setInterval(()=>{
+    if(firstAt){
+      const lag=v.buffered.length?(v.buffered.end(0)-v.currentTime):'?';
+      status.textContent=`▶ playing · time=${v.currentTime.toFixed(2)} · buffered=${v.buffered.length?v.buffered.end(0).toFixed(2):'-'} · lag=${typeof lag==='number'?lag.toFixed(2)+'s':lag} · ${(bytes/1024).toFixed(0)}KB ${frames}chunks`;
+    }
+  },500);
+  v.addEventListener('error',()=>L('VIDEO ERROR',v.error?.code,v.error?.message));
+})();
+</script></body></html>

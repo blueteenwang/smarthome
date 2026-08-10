@@ -1,0 +1,6 @@
+config.json
+memory.json
+snapshots/
+audio/
+.DS_Store
+*.log
