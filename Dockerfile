@@ -1,18 +1,18 @@
 # =============================================================================
 # Smart Home AI Dashboard — Synology / Linux Docker image
 # =============================================================================
-# Base: node:20-bookworm-slim
-#   - 包含 Node.js 20 LTS + glibc + apt 包管理
+# Base: node:22-bookworm-slim
+#   - 包含 Node.js 22 LTS + 内置 SQLite + glibc + apt 包管理
 #   - 比 alpine 大 ~80MB，但可直接 apt 装 ffmpeg（无需自己编 musl 兼容的 ffmpeg）
 #   - 跨平台稳定，arm64/amd64 都能跑
 #
 # 装 ffmpeg：用 Debian 官方的 ffmpeg，含 libx264 / libx265 / 必要 demuxer/muxer
 #   - 体积约 +85MB；对群晖来说毫无压力
 #
-# 运行时只暴露 8090 端口；config.json + snapshots/ + audio/ 走 volume 挂载
+# 运行时只暴露 8090 端口；配置、媒体缓存与 SQLite 账本走 volume 挂载
 # =============================================================================
 
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 # 系统层依赖：ffmpeg 必装，curl 可选（健康检查用），ca-certificates 必装（DashScope HTTPS）
 # tini 让 PID 1 处理 SIGTERM/SIGINT 干净退出（ffmpeg 子进程才会被 reap）
@@ -36,6 +36,8 @@ WORKDIR /app
 # 复制项目源码
 # 注意：.dockerignore 把无关文件（before/, redesign/, *.bak, .DS_Store）排除掉
 COPY server.js ./
+COPY lib ./lib
+COPY index-world.html ./
 COPY index.html ./
 COPY index-v2.html ./
 COPY mse-test.html ./
@@ -58,7 +60,7 @@ EXPOSE 8090
 # 健康检查：30s 一次打 /api/snapshot.json，2 次失败认为不健康
 # 群晖 Container Manager 会读这个状态显示绿/黄/红
 HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=2 \
-    CMD curl -fsS --max-time 5 http://127.0.0.1:8090/api/snapshot.json > /dev/null || exit 1
+    CMD-SHELL curl -fsS --max-time 5 -H "Authorization: Bearer ${HOMESENSE_ACCESS_TOKEN:-${HAVENMIND_ACCESS_TOKEN:-$NOVA_ACCESS_TOKEN}}" http://127.0.0.1:8090/api/media/status > /dev/null || exit 1
 
 # tini 作 PID 1 — 转发信号给 node，node 退出后 ffmpeg 子进程也会随 OOM/SIGKILL 一起死，避免僵尸
 ENTRYPOINT ["/usr/bin/tini", "--"]

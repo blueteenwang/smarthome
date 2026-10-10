@@ -1,0 +1,15 @@
+{
+  "name": "homesense",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Local-first multi-sensor home intelligence prototype",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check server.js && node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

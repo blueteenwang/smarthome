@@ -1,24 +1,24 @@
-# Smart Home AI Dashboard — Synology / Linux 部署模板
+# HomeSense — Synology / Linux 部署模板
 #
 # 使用方式：
-#   1. 把这个文件 + Dockerfile + 项目源码放到群晖 /volume1/docker/smart-home-ai/
+#   1. 把这个文件 + Dockerfile + 项目源码放到群晖 /volume1/docker/homesense/
 #   2. 准备 config.json（从 config.json.example 复制改）
-#   3. cd /volume1/docker/smart-home-ai && docker-compose up -d
+#   3. cd /volume1/docker/homesense && docker-compose up -d
 #
 # 如果用 Container Manager（DSM 7.2+）UI 操作：
-#   - 项目 → 创建 → 路径选 /volume1/docker/smart-home-ai → 来源选 docker-compose.yml
+#   - 项目 → 创建 → 路径选 /volume1/docker/homesense → 来源选 docker-compose.yml
 #
 # 故障排查：
-#   - docker logs -f smart-home-ai          # 实时日志
-#   - docker exec -it smart-home-ai sh      # 进容器
-#   - docker exec smart-home-ai ffmpeg -version    # 验证 ffmpeg 装好了
+#   - docker logs -f homesense          # 实时日志
+#   - docker exec -it homesense sh      # 进容器
+#   - docker exec homesense ffmpeg -version    # 验证 ffmpeg 装好了
 
 services:
-  smart-home-ai:
+  homesense:
     # 镜像名：build 后的本地名（如果你不打 registry，用本地名即可）
     # 如果群晖通过 docker save | scp 导入，导入后镜像名一致即可直接用
-    image: smart-home-ai:latest
-    container_name: smart-home-ai
+    image: homesense:latest
+    container_name: homesense
 
     # ⚠️ 网络模式（默认 bridge，推荐分发场景使用）
     #
@@ -41,11 +41,16 @@ services:
       - ./config.json:/app/config.json:rw
       - ./snapshots:/app/snapshots:rw
       - ./audio:/app/audio:rw
+      - ./runtime:/app/runtime:rw
 
     # 时区
     environment:
       - TZ=Asia/Shanghai
       - NODE_ENV=production
+      - HOMESENSE_DATA_DIR=/app/runtime
+      - HOMESENSE_HOST=0.0.0.0
+      # 局域网监听必须配置至少 24 位随机令牌；不要把真实令牌提交到仓库。
+      - HOMESENSE_ACCESS_TOKEN=${HOMESENSE_ACCESS_TOKEN:?请在 .env 中设置 HOMESENSE_ACCESS_TOKEN}
 
     # ⚠️ 群晖用户：默认 docker 用户 PUID=1026 (admin), PGID=100 (users)
     # 如果你 ssh 到群晖 `id` 一下确认。Dockerfile 里设的是 node 用户(uid 1000)，
@@ -59,7 +64,7 @@ services:
 
     # 健康检查覆盖（Dockerfile 里已有，这里仅展示如何 override）
     # healthcheck:
-    #   test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/api/snapshot.json"]
+    #   test: ["CMD-SHELL", "curl -fsS -H 'Authorization: Bearer $$HOMESENSE_ACCESS_TOKEN' http://127.0.0.1:8090/api/media/status"]
     #   interval: 30s
     #   timeout: 8s
     #   retries: 2

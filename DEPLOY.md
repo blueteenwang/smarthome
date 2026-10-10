@@ -35,9 +35,9 @@ uname -m
 群晖 SSH 里：
 
 ```bash
-sudo mkdir -p /volume1/docker/smart-home-ai
-sudo chown -R $USER:users /volume1/docker/smart-home-ai
-cd /volume1/docker/smart-home-ai
+sudo mkdir -p /volume1/docker/homesense
+sudo chown -R $USER:users /volume1/docker/homesense
+cd /volume1/docker/homesense
 ```
 
 ### 2.2 把源码传上来
@@ -56,7 +56,7 @@ rsync -av --progress \
   --exclude='snapshots/' \
   --exclude='audio/' \
   --exclude='config.json' \
-  ./ USER@NAS_IP:/volume1/docker/smart-home-ai/
+  ./ USER@NAS_IP:/volume1/docker/homesense/
 ```
 
 > 注意：故意不传 `config.json`（含 token 等敏感信息），等下单独传脱敏副本
@@ -77,32 +77,32 @@ cp config.json.example /tmp/config.json
 传到群晖：
 
 ```bash
-scp /tmp/config.json USER@NAS_IP:/volume1/docker/smart-home-ai/config.json
+scp /tmp/config.json USER@NAS_IP:/volume1/docker/homesense/config.json
 ```
 
 ### 2.4 在群晖 SSH 内 build
 
 ```bash
 ssh USER@NAS_IP
-cd /volume1/docker/smart-home-ai
+cd /volume1/docker/homesense
 
-sudo docker build -t smart-home-ai:latest .
-# 第一次约 2-4 分钟（拉 node:20-bookworm-slim + apt 装 ffmpeg）
+sudo docker build -t homesense:latest .
+# 第一次约 2-4 分钟（拉 node:22-bookworm-slim + apt 装 ffmpeg）
 
 # 验证
-sudo docker images smart-home-ai
+sudo docker images homesense
 # REPOSITORY      TAG       IMAGE ID    SIZE
-# smart-home-ai   latest    abcd1234    ~280MB
+# homesense   latest    abcd1234    ~280MB
 ```
 
 ### 2.5 启动
 
 ```bash
-cd /volume1/docker/smart-home-ai
+cd /volume1/docker/homesense
 sudo docker compose up -d   # 注意 DSM 7.2+ 是 `docker compose`（无横线），旧版是 `docker-compose`
 
 # 实时看日志
-sudo docker logs -f smart-home-ai
+sudo docker logs -f homesense
 ```
 
 正常启动应看到：
@@ -132,19 +132,19 @@ curl -s http://NAS_IP:8090/api/snapshot.json | head -c 200
 cd /path/to/homesense
 
 # 1) build（Mac 是 arm64，群晖是 x86 → 加 --platform 交叉编译）
-docker build --platform linux/amd64 -t smart-home-ai:latest .
+docker build --platform linux/amd64 -t homesense:latest .
 
 # 2) 导出
-docker save smart-home-ai:latest -o smart-home-ai.tar
+docker save homesense:latest -o homesense.tar
 
 # 3) 传到群晖
-scp smart-home-ai.tar USER@NAS_IP:/volume1/docker/smart-home-ai/
-scp config.json docker-compose.yml USER@NAS_IP:/volume1/docker/smart-home-ai/
+scp homesense.tar USER@NAS_IP:/volume1/docker/homesense/
+scp config.json docker-compose.yml USER@NAS_IP:/volume1/docker/homesense/
 
 # 4) 群晖端 load + up
 ssh USER@NAS_IP
-cd /volume1/docker/smart-home-ai
-sudo docker load -i smart-home-ai.tar
+cd /volume1/docker/homesense
+sudo docker load -i homesense.tar
 sudo docker compose up -d
 ```
 
@@ -153,8 +153,8 @@ sudo docker compose up -d
 ## 4. 用 Container Manager UI（不爱命令行的）
 
 1. 打开 **Container Manager** → 项目 → 新增
-2. 项目名称：`smart-home-ai`
-3. 路径：选 `/volume1/docker/smart-home-ai`
+2. 项目名称：`homesense`
+3. 路径：选 `/volume1/docker/homesense`
 4. 来源：选 `从 docker-compose.yml 创建`（系统自动识别）
 5. 下一步 → 启动
 
@@ -167,19 +167,19 @@ UI 启动后日志页能直接看到容器输出。
 ### Q1：容器启动后立即 exit
 
 ```bash
-sudo docker logs smart-home-ai
+sudo docker logs homesense
 ```
 
 最常见原因：
 - **`Cannot find module ... config.json`** → `volumes` 路径错，确认 `./config.json` 在当前目录存在
 - **`EACCES: permission denied`** → 群晖创建的文件 owner 是 admin (uid 1026)，容器里 node 用户 (uid 1000) 读不到。两种解法：
-  1. `sudo chmod 644 /volume1/docker/smart-home-ai/config.json`
+  1. `sudo chmod 644 /volume1/docker/homesense/config.json`
   2. docker-compose.yml 取消注释 `user: "1026:100"`
 
 ### Q2：HA 调不通（`Failed to fetch HA states`）
 
 ```bash
-sudo docker exec smart-home-ai curl -s http://192.168.X.X:8123/api/ -H "Authorization: Bearer YOUR_TOKEN"
+sudo docker exec homesense curl -s http://192.168.X.X:8123/api/ -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
 不通的可能：
@@ -189,7 +189,7 @@ sudo docker exec smart-home-ai curl -s http://192.168.X.X:8123/api/ -H "Authoriz
 ### Q3：RTSP 拉不到流
 
 ```bash
-sudo docker exec smart-home-ai ffmpeg -rtsp_transport tcp -i "rtsp://USER:PASS@..." -t 3 -frames:v 1 -y /tmp/test.jpg
+sudo docker exec homesense ffmpeg -rtsp_transport tcp -i "rtsp://USER:PASS@..." -t 3 -frames:v 1 -y /tmp/test.jpg
 ```
 
 - `401 Unauthorized` → DSM SS 重新生成 RTSP 密码
@@ -198,7 +198,7 @@ sudo docker exec smart-home-ai ffmpeg -rtsp_transport tcp -i "rtsp://USER:PASS@.
 ### Q4：DashScope 调不通
 
 ```bash
-sudo docker exec smart-home-ai curl -s -X POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions \
+sudo docker exec homesense curl -s -X POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions \
   -H "Authorization: Bearer YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen-turbo","messages":[{"role":"user","content":"hi"}]}'
@@ -228,33 +228,33 @@ deploy:
 
 ```bash
 # 看日志
-sudo docker logs --tail 100 smart-home-ai
-sudo docker logs -f smart-home-ai
+sudo docker logs --tail 100 homesense
+sudo docker logs -f homesense
 
 # 改了 config.json 不需要重 build，重启即可
-sudo docker restart smart-home-ai
+sudo docker restart homesense
 
 # 升级（在群晖 build 路径下）
-cd /volume1/docker/smart-home-ai
+cd /volume1/docker/homesense
 git pull   # 如果用 git；否则手动 rsync 新代码
 sudo docker compose down
-sudo docker build -t smart-home-ai:latest .
+sudo docker build -t homesense:latest .
 sudo docker compose up -d
 
 # 停 / 删
 sudo docker compose down
-sudo docker rmi smart-home-ai:latest
+sudo docker rmi homesense:latest
 ```
 
 ---
 
 ## 7. 备份
 
-值得备份的就一个：`config.json`（含 token / API key / 自动化规则）。
+需要备份 `config.json`（连接、规则与安全配置）、`memory.json`（家庭偏好）、`face-data/`（经同意录入的人脸特征）和运行目录中的 `nova-runtime.sqlite`（事件与质量账本）。快照与音频缓存可以不备份。
 
 ```bash
 # 群晖端定时备份
-cp /volume1/docker/smart-home-ai/config.json /volume1/backup/smart-home-ai-$(date +%Y%m%d).json
+cp /volume1/docker/homesense/config.json /volume1/backup/homesense-$(date +%Y%m%d).json
 ```
 
 snapshots/ + audio/ 是缓存，不用备份。
@@ -273,9 +273,9 @@ snapshots/ + audio/ 是缓存，不用备份。
 
 - 把镜像推到 Docker Hub：
   ```bash
-  docker tag smart-home-ai:latest YOUR_DOCKERHUB_USER/smart-home-ai:0.1.0
-  docker push YOUR_DOCKERHUB_USER/smart-home-ai:0.1.0
+  docker tag homesense:latest YOUR_DOCKERHUB_USER/homesense:0.1.0
+  docker push YOUR_DOCKERHUB_USER/homesense:0.1.0
   ```
-- 别人 docker-compose.yml 里 image 改成 `YOUR_DOCKERHUB_USER/smart-home-ai:0.1.0`，`docker compose up -d` 就跑起来了
+- 别人 docker-compose.yml 里 image 改成 `YOUR_DOCKERHUB_USER/homesense:0.1.0`，`docker compose up -d` 就跑起来了
 
 > 这步等社区文章 + GitHub 仓库立稳之后再做，先别急。

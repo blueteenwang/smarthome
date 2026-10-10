@@ -2,7 +2,10 @@
   "_README": "复制这个文件为 config.json 并填入你自己的真实凭据。所有 *** 处必须替换。完整字段含义见 DEPLOY.md。",
 
   "server": {
-    "port": 8090
+    "port": 8090,
+    "host": "127.0.0.1",
+    "_security": "默认仅本机访问。需要局域网访问时把 host 改为 0.0.0.0，并通过 HOMESENSE_ACCESS_TOKEN 环境变量设置至少 24 位随机令牌。",
+    "allowedOrigins": []
   },
 
   "homeAssistant": {
@@ -56,6 +59,7 @@
     "vad": {
       "energyThresholdOn": 0.018,
       "energyThresholdOff": 0.01,
+      "adaptive": true,
       "minSpeechMs": 300,
       "silenceTimeoutMs": 1000,
       "maxUtteranceMs": 8000,
@@ -69,6 +73,16 @@
     "partialAsr": true,
     "semanticGate": true,
     "audioSource": "rtsp",
+    "conversation": {
+      "enabled": true,
+      "idleTimeoutSec": 60,
+      "maxTurns": 8
+    },
+    "output": {
+      "mode": "follow",
+      "echoGuardMs": 500,
+      "_doc": "follow=本机输入走本机、摄像头输入走小爱、网页输入只显示文字；也可选 local、xiaoai、silent"
+    },
     "tts": {
       "enabled": false,
       "voice": "Tingting",
@@ -81,6 +95,11 @@
     "defaultCooldownSec": 300,
     "observationHours": 24,
     "rules": []
+  },
+
+  "privacy": {
+    "_doc": "家庭事件、执行结果与质量指标的本地保留期限。SQLite 会自动清理超过期限的运行记录。",
+    "runtimeRetentionDays": 30
   },
 
   "llmPricing": {

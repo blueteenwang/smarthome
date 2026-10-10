@@ -12,18 +12,258 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
-const { execSync, exec, spawn } = require('child_process');
+const { execSync, execFileSync, execFile, exec, spawn } = require('child_process');
 const url = require('url');
+const { HomeStateEngine } = require('./lib/home-state');
+const { buildAutomationTimeline } = require('./lib/automation-timeline');
+const { compileRuleIntent, evaluatePolicy, attachDeviceGuard, bindRuleTarget } = require('./lib/rule-policy');
+const { HaRealtimeClient } = require('./lib/ha-realtime');
+const { SpaceRegistry, SpatialIntelligence } = require('./lib/spatial-intelligence');
+const { DecisionQualityStore } = require('./lib/decision-quality');
+const { resolveSecurity, authenticateRequest, corsOrigin } = require('./lib/security-boundary');
+const { writeJsonAtomic } = require('./lib/atomic-json');
+const { RuntimeLedger } = require('./lib/runtime-ledger');
+const { RuleEpisodeGate } = require('./lib/rule-episode-gate');
+const { answerHouseholdHistoryQuestion } = require('./lib/home-history-qa');
+const { answerDeviceStatusQuestion, parseDeviceStatusQuestion } = require('./lib/device-status-qa');
+const { resolveVoiceOutput, VoiceEchoGuard } = require('./lib/voice-output-router');
+const { decodeUtf8Body } = require('./lib/utf8-body');
+const { AdaptiveVadThreshold } = require('./lib/adaptive-vad');
+const { VoiceConversationSession, expandHouseholdFollowUp } = require('./lib/voice-conversation');
+const { isVisualQuestion } = require('./lib/visual-question');
 
 // Load config
 const CONFIG_PATH = path.join(__dirname, 'config.json');
+const ACTIVITY_HISTORY_PATH = path.join(__dirname, 'activity-history.json');
+const FACE_DATA_DIR = path.join(__dirname, 'face-data');
+const FACE_INDEX_PATH = path.join(FACE_DATA_DIR, 'index.json');
+const FACE_HELPER_PATH = path.join(__dirname, '.local', 'bin', 'face-vision');
+const FACE_HELPER_SOURCE = path.join(__dirname, 'scripts', 'face-vision.swift');
 let config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+config.spaceRegistry = config.spaceRegistry || { bindings: {} };
+config.spaceRegistry.environmentSources = config.spaceRegistry.environmentSources || {};
 
 const PORT = config.server.port || 8090;
+const SECURITY = resolveSecurity(config);
 const SNAPSHOT_DIR = path.join(__dirname, 'snapshots');
 const SNAPSHOT_PATH = path.join(SNAPSHOT_DIR, 'latest.jpg');
+const HOME_STATE_PATH = path.join(__dirname, 'home-state.json');
+const HOME_EVENTS_PATH = path.join(__dirname, 'home-events.json');
+const DECISION_QUALITY_PATH = path.join(__dirname, 'decision-quality.json');
+const RUNTIME_DATA_DIR = process.env.HOMESENSE_DATA_DIR || process.env.HAVENMIND_DATA_DIR || process.env.NOVA_DATA_DIR || __dirname;
+const RUNTIME_LEDGER_PATH = path.join(RUNTIME_DATA_DIR, 'nova-runtime.sqlite');
+
+// The household state core is the stable boundary between unreliable sensor
+// observations and automation decisions. Existing features can migrate onto
+// it incrementally without changing their public behavior in one release.
+const RuntimeStore = new RuntimeLedger(RUNTIME_LEDGER_PATH, { retentionDays: config.privacy?.runtimeRetentionDays || 30 });
+const SpatialRegistry = new SpaceRegistry({
+  rooms: config.rooms || [],
+  bindings: config.spaceRegistry.bindings || {},
+  environmentSources: config.spaceRegistry.environmentSources || {}
+});
+const DecisionQuality = new DecisionQualityStore(DECISION_QUALITY_PATH, { ledger: RuntimeStore });
+const SpatialEngine = new SpatialIntelligence({ onCorrection: correction => handleCorrectionSignal(correction) });
+let HaRealtime = null;
+const HomeState = new HomeStateEngine({
+  homeId: config.home?.id || 'home',
+  statePath: HOME_STATE_PATH,
+  eventsPath: HOME_EVENTS_PATH,
+  ledger: RuntimeStore,
+  spaceResolver: entity => SpatialRegistry.resolve(entity),
+  sourceReliability: (adapter, sourceId) => SpatialEngine.reliabilityFor(adapter, sourceId),
+  environmentSource: (spaceId, metric) => SpatialRegistry.environmentSource(spaceId, metric)
+});
 
 if (!fs.existsSync(SNAPSHOT_DIR)) fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
+if (!fs.existsSync(FACE_DATA_DIR)) fs.mkdirSync(FACE_DATA_DIR, { recursive: true });
+
+function ensureFaceHelper() {
+  if (fs.existsSync(FACE_HELPER_PATH)) return true;
+  try {
+    fs.mkdirSync(path.dirname(FACE_HELPER_PATH), { recursive: true });
+    execFileSync('/usr/bin/swiftc', [FACE_HELPER_SOURCE, '-o', FACE_HELPER_PATH, '-framework', 'Vision', '-framework', 'CoreGraphics', '-framework', 'ImageIO'], { timeout: 60000 });
+    return true;
+  } catch (e) {
+    console.error('[Face] Local Vision helper unavailable:', e.message);
+    return false;
+  }
+}
+ensureFaceHelper();
+
+// ============ Local Face Identity ============
+// Explicit enrollment only. The uploaded image is held in a temporary file,
+// converted to an Apple Vision feature print, and immediately deleted.
+const FaceIdentity = {
+  people: [],
+  // Apple Vision feature-print distance. 0.45 tolerates normal camera angle
+  // and lighting drift while remaining conservative for household identities.
+  threshold: 0.45,
+  lastRecognition: null,
+  recognitionInFlight: null,
+  /**
+   * Coalesces historical or concurrently-created records with the same name.
+   * A person's stable id remains the oldest record id; every usable feature
+   * print is retained as an angle sample.
+   */
+  mergeSameName(people) {
+    const mergedByName = new Map();
+    for (const rawPerson of people || []) {
+      const person = {
+        ...rawPerson,
+        samples: Array.isArray(rawPerson.samples) && rawPerson.samples.length
+          ? rawPerson.samples
+          : [{ id: rawPerson.id, createdAt: rawPerson.createdAt, source: rawPerson.enrolledFrom || 'legacy' }]
+      };
+      const key = String(person.name || '').trim().toLocaleLowerCase();
+      if (!key || !mergedByName.has(key)) {
+        if (key) mergedByName.set(key, person);
+        continue;
+      }
+      const existing = mergedByName.get(key);
+      const knownSamples = new Set(existing.samples.map(sample => sample.id));
+      for (const sample of person.samples) {
+        if (!knownSamples.has(sample.id)) existing.samples.push(sample);
+      }
+      if ((person.createdAt || Infinity) < (existing.createdAt || Infinity)) {
+        existing.createdAt = person.createdAt;
+      }
+    }
+    return [...mergedByName.values()];
+  },
+  load() {
+    try {
+      this.people = this.mergeSameName(JSON.parse(fs.readFileSync(FACE_INDEX_PATH, 'utf8')).people || []);
+      // Persist the migration so all subsequent reads observe one identity per
+      // person, including records produced by an older multi-sample build.
+      this.save();
+    }
+    catch { this.people = []; }
+  },
+  save() {
+    this.people = this.mergeSameName(this.people);
+    const next = `${FACE_INDEX_PATH}.next`;
+    fs.writeFileSync(next, JSON.stringify({ version: 2, people: this.people }, null, 2));
+    fs.renameSync(next, FACE_INDEX_PATH);
+  },
+  safeId() { return `face-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; },
+  extract(imagePath, featurePath) {
+    const result = execFileSync(FACE_HELPER_PATH, ['extract', imagePath, featurePath], { encoding: 'utf8', timeout: 15000 });
+    return JSON.parse(result);
+  },
+  extractAsync(imagePath, featurePath) {
+    return new Promise((resolve, reject) => {
+      execFile(FACE_HELPER_PATH, ['extract', imagePath, featurePath], { encoding: 'utf8', timeout: 10000 }, (error, stdout, stderr) => {
+        if (error) {
+          error.stderr = stderr;
+          return reject(error);
+        }
+        try { resolve(JSON.parse(stdout)); } catch (e) { reject(e); }
+      });
+    });
+  },
+  compareAsync(firstFeaturePath, secondFeaturePath) {
+    return new Promise((resolve, reject) => {
+      execFile(FACE_HELPER_PATH, ['compare', firstFeaturePath, secondFeaturePath], { encoding: 'utf8', timeout: 5000 }, (error, stdout, stderr) => {
+        if (error) {
+          error.stderr = stderr;
+          return reject(error);
+        }
+        try { resolve(JSON.parse(stdout)); } catch (e) { reject(e); }
+      });
+    });
+  },
+  enroll(name, imageBuffer) {
+    const cleanName = String(name || '').trim().slice(0, 40);
+    if (!cleanName) throw new Error('请输入姓名');
+    if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length < 1000 || imageBuffer.length > 8 * 1024 * 1024) throw new Error('照片大小必须在 1KB–8MB');
+    const sampleId = this.safeId(), tempPath = path.join(FACE_DATA_DIR, `${sampleId}.enroll.tmp`), featurePath = path.join(FACE_DATA_DIR, `${sampleId}.faceprint`);
+    try {
+      fs.writeFileSync(tempPath, imageBuffer);
+      this.extract(tempPath, featurePath);
+      let person = this.people.find(item => item.name.toLocaleLowerCase() === cleanName.toLocaleLowerCase());
+      const sample = { id: sampleId, createdAt: Date.now(), source: 'upload' };
+      if (person) person.samples.push(sample);
+      else { person = { id: this.safeId(), name: cleanName, createdAt: sample.createdAt, samples: [sample] }; this.people.push(person); }
+      this.save(); return { ...person, sampleCount: person.samples.length };
+    } finally { try { fs.unlinkSync(tempPath); } catch {} }
+  },
+  async enrollFromSnapshot(name) {
+    const cleanName = String(name || '').trim().slice(0, 40);
+    if (!cleanName) throw new Error('请输入姓名');
+    if (!fs.existsSync(SNAPSHOT_PATH)) throw new Error('当前没有可用的摄像头画面');
+    const sampleId = this.safeId(), featurePath = path.join(FACE_DATA_DIR, `${sampleId}.faceprint`), frozenSnapshot = path.join(FACE_DATA_DIR, `${sampleId}.camera.tmp`);
+    try {
+      // Freeze one complete frame so the stream cannot replace latest.jpg while
+      // Vision is decoding it. Async execution keeps the web UI responsive.
+      fs.copyFileSync(SNAPSHOT_PATH, frozenSnapshot);
+      await this.extractAsync(frozenSnapshot, featurePath);
+      let person = this.people.find(item => item.name.toLocaleLowerCase() === cleanName.toLocaleLowerCase());
+      const sample = { id: sampleId, createdAt: Date.now(), source: 'camera' };
+      if (person) person.samples.push(sample);
+      else { person = { id: this.safeId(), name: cleanName, createdAt: sample.createdAt, samples: [sample] }; this.people.push(person); }
+      this.save(); return { ...person, sampleCount: person.samples.length };
+    } finally { try { fs.unlinkSync(frozenSnapshot); } catch {} }
+  },
+  remove(id) {
+    const index = this.people.findIndex(p => p.id === id);
+    if (index < 0) return false;
+    const [person] = this.people.splice(index, 1);
+    for (const sample of person.samples || [{ id: person.id }]) {
+      try { fs.unlinkSync(path.join(FACE_DATA_DIR, `${sample.id}.faceprint`)); } catch {}
+    }
+    this.save(); return true;
+  },
+  recognize(imagePath) {
+    if (!this.people.length || !fs.existsSync(imagePath)) return null;
+    const probe = path.join(FACE_DATA_DIR, `.probe-${process.pid}.faceprint`);
+    try {
+      this.extract(imagePath, probe);
+      let best = null;
+      for (const person of this.people) {
+        for (const sample of person.samples || [{ id: person.id }]) try {
+          const raw = execFileSync(FACE_HELPER_PATH, ['compare', probe, path.join(FACE_DATA_DIR, `${sample.id}.faceprint`)], { encoding: 'utf8', timeout: 5000 });
+          const distance = JSON.parse(raw).distance;
+          if (Number.isFinite(distance) && (!best || distance < best.distance)) best = { ...person, sampleId: sample.id, distance };
+        } catch {}
+      }
+      if (!best || best.distance > this.threshold) return { matched: false, distance: best?.distance ?? null };
+      return { matched: true, id: best.id, name: best.name, sampleId: best.sampleId, sampleCount: best.samples?.length || 1, distance: best.distance, confidence: Math.max(0, Math.min(1, 1 - best.distance / this.threshold)) };
+    } catch { return null; }
+    finally { try { fs.unlinkSync(probe); } catch {} }
+  },
+  async recognizeAsync(imagePath) {
+    if (!this.people.length || !fs.existsSync(imagePath)) return null;
+    const probeId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const frozenImage = path.join(FACE_DATA_DIR, `.probe-${probeId}.jpg`);
+    const probeFeature = path.join(FACE_DATA_DIR, `.probe-${probeId}.faceprint`);
+    try {
+      fs.copyFileSync(imagePath, frozenImage);
+      await this.extractAsync(frozenImage, probeFeature);
+      let best = null;
+      for (const person of this.people) {
+        for (const sample of person.samples || [{ id: person.id }]) try {
+          const result = await this.compareAsync(probeFeature, path.join(FACE_DATA_DIR, `${sample.id}.faceprint`));
+          const distance = result.distance;
+          if (Number.isFinite(distance) && (!best || distance < best.distance)) best = { ...person, sampleId: sample.id, distance };
+        } catch {}
+      }
+      if (!best || best.distance > this.threshold) return { matched: false, distance: best?.distance ?? null };
+      return { matched: true, id: best.id, name: best.name, sampleId: best.sampleId, sampleCount: best.samples?.length || 1, distance: best.distance, confidence: Math.max(0, Math.min(1, 1 - best.distance / this.threshold)) };
+    } finally {
+      try { fs.unlinkSync(frozenImage); } catch {}
+      try { fs.unlinkSync(probeFeature); } catch {}
+    }
+  },
+  refreshRecognition(imagePath) {
+    if (this.recognitionInFlight || !this.people.length) return;
+    this.recognitionInFlight = this.recognizeAsync(imagePath)
+      .then(result => { this.lastRecognition = result; })
+      .catch(error => console.warn('[Face] Background recognition failed:', error.message))
+      .finally(() => { this.recognitionInFlight = null; });
+  }
+};
+FaceIdentity.load();
 
 // ============ LLM Token Usage Tracking ============
 const TokenUsage = {
@@ -105,6 +345,7 @@ let isCapturing = false;
 let captureFailCount = 0;
 let activeStreamClients = 0; // tracks /api/stream consumers to avoid RTSP contention
 let isSnapshotRefreshing = false; // fast snapshot-only capture mutex
+let snapshotRefreshProcess = null;
 
 // ============ Auto-Adaptive Stream Profile ============
 // Detected at startup + on bad-frame recovery. Drives stream mode/width/fps decisions
@@ -203,6 +444,14 @@ function detectStreamProfile() {
                      || streamProfile.fps !== next.fps;
         streamProfile = next;
         console.log(`[Profile]${changed ? ' 🔄 CHANGED' : ''} ${next.codec} ${next.width}x${next.height}@${next.fps}fps → mode=${next.recommendedMode} ${next.recommendedStreamWidth}p@${next.recommendedStreamFps}fps q=${next.recommendedQv} (${next.reason})`);
+        // The boot-time compatibility hint may start UDP before the real source
+        // dimensions are known. If probing reveals a smaller stream and UDP has
+        // not produced a frame, immediately retry the fast TCP profile.
+        if (typeof MediaHub !== 'undefined' && next.width < 3000 && MediaHub.currentTransport === 'udp' && MediaHub.videoBytes === 0) {
+          MediaHub.transportFallback = 'tcp';
+          MediaHub.lastError = '已根据实时码流切换 TCP';
+          MediaHub.restart('profile resolved to non-4K source');
+        }
       } catch (e) {
         console.warn('[Profile] parse error:', e.message);
       }
@@ -257,11 +506,13 @@ function recordFrameHealth(health) {
   if (badFrameStreak >= 3 && Date.now() - lastRecoverAt > 30000) {
     lastRecoverAt = Date.now();
     badFrameStreak = 0;
-    const host = (config.camera.rtspUrl.match(/@([^:/]+)/) || [])[1] || '192.168';
-    console.warn(`[Health] 🔧 recovering — killing ffmpeg sessions for ${host}, refreshing profile`);
-    exec(`pkill -9 -f "ffmpeg.*${host}" 2>/dev/null`, () => {
-      setTimeout(() => detectStreamProfile().catch(() => {}), 2000);
-    });
+    console.warn('[Health] 🔧 recovering snapshot pipeline without touching live media');
+    if (snapshotDaemon && !snapshotDaemon.killed) {
+      try { snapshotDaemon.kill('SIGTERM'); } catch {}
+    }
+    // Live media owns a separate lifecycle. A stale snapshot result must never
+    // kill a newly-established browser stream from the same camera address.
+    setTimeout(() => detectStreamProfile().catch(() => {}), 2000);
   }
 }
 
@@ -276,11 +527,17 @@ function recordFrameHealth(health) {
 let snapshotDaemon = null;
 let snapshotDaemonStartedAt = 0;
 let daemonRestartTimer = null;
+let snapshotDaemonRequested = false;
 let snapshotPipeBuffer = Buffer.alloc(0);
 let lastSnapshotHealthCheckAt = 0;
 
 function startSnapshotDaemon() {
-  if (snapshotDaemon && !snapshotDaemon.killed && snapshotDaemon.exitCode === null) return;
+  if (snapshotDaemon && snapshotDaemon.exitCode === null) return;
+  if (isSnapshotRefreshing || (snapshotRefreshProcess && snapshotRefreshProcess.exitCode === null)) {
+    snapshotDaemonRequested = true;
+    return;
+  }
+  snapshotDaemonRequested = false;
   if (typeof MediaHub !== 'undefined' && MediaHub.status().running) return;
   // 让出权限给 voice rtsp 模式与活跃 stream client
   if (VoicePipeline && VoicePipeline.running && VoicePipeline.audioSource === 'rtsp') {
@@ -298,14 +555,19 @@ function startSnapshotDaemon() {
   // daemon fps 取一半以减少 CPU；解码 0.18× 已是上限，编码端高 fps 浪费
   const fps = Math.max(2, Math.min(streamProfile.recommendedStreamFps || 4, 5));
   const qv = String(streamProfile.recommendedQv || 12);
+  const highResolutionSource = streamProfile.width ? streamProfile.width >= 3000 : config.camera.forceSnapshotMode === true;
+  const rtspTransport = highResolutionSource ? 'udp' : 'tcp';
+  const strictSnapshotDecode = rtspTransport === 'tcp' && config.camera.forceSnapshotMode !== true;
 
   const args = [
     '-hide_banner', '-loglevel', 'error',
-    '-fflags', 'genpts+discardcorrupt',
-    '-err_detect', 'explode',
-    '-rtsp_transport', 'tcp',
-    '-probesize', '2M', '-analyzeduration', '1M',
-    '-rtbufsize', '16M', '-max_delay', '1000000',
+    '-fflags', strictSnapshotDecode ? 'genpts+discardcorrupt' : 'genpts',
+    ...(strictSnapshotDecode ? ['-err_detect', 'explode'] : []),
+    '-rtsp_transport', rtspTransport,
+    '-buffer_size', highResolutionSource ? '16777216' : '4194304',
+    '-reorder_queue_size', highResolutionSource ? '4096' : '0',
+    '-probesize', highResolutionSource ? '16M' : '2M', '-analyzeduration', highResolutionSource ? '4M' : '1M',
+    '-rtbufsize', highResolutionSource ? '64M' : '16M', '-max_delay', highResolutionSource ? '3000000' : '0',
     '-i', rtspUrl,
     '-an',
     '-vf', `scale=${width}:-2:in_range=tv:out_range=pc,fps=2:round=down,format=yuvj420p`,
@@ -319,7 +581,7 @@ function startSnapshotDaemon() {
   snapshotDaemon = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
   snapshotDaemonStartedAt = Date.now();
   const launchedPid = snapshotDaemon.pid;
-  console.log(`[Daemon] ✅ started pid=${launchedPid} → ${width}p@${fps}fps q=${qv}`);
+  console.log(`[Daemon] ✅ started pid=${launchedPid} → ${width}p@${fps}fps q=${qv} transport=${rtspTransport}`);
 
   snapshotDaemon.stderr.on('data', (chunk) => {
     const txt = chunk.toString();
@@ -360,6 +622,9 @@ function startSnapshotDaemon() {
     console.warn(`[Daemon] ffmpeg exited code=${code} signal=${signal} (lifetime ${Math.round((Date.now()-snapshotDaemonStartedAt)/1000)}s)`);
     snapshotDaemon = null;
     if (daemonRestartTimer) clearTimeout(daemonRestartTimer);
+    // MediaHub publishes its own periodic snapshots from the same RTSP ingest.
+    // Do not bring up a second decoder while the shared pipeline is healthy.
+    if (typeof MediaHub !== 'undefined' && MediaHub.status().running) return;
     // 退避重启：避免 RTSP 频繁重连引起摄像头封禁
     daemonRestartTimer = setTimeout(startSnapshotDaemon, 3000);
   });
@@ -367,15 +632,24 @@ function startSnapshotDaemon() {
 
 function stopSnapshotDaemon(reason) {
   if (daemonRestartTimer) { clearTimeout(daemonRestartTimer); daemonRestartTimer = null; }
-  if (snapshotDaemon && !snapshotDaemon.killed) {
+  if (snapshotDaemon && snapshotDaemon.exitCode === null) {
+    const daemonToStop = snapshotDaemon;
     console.log(`[Daemon] 🛑 stopping (${reason})`);
-    try { snapshotDaemon.kill('SIGKILL'); } catch (_) {}
-    snapshotDaemon = null;
+    if (!daemonToStop.killed) {
+      try { daemonToStop.kill('SIGTERM'); } catch (_) {}
+    }
+    const forceTimer = setTimeout(() => {
+      if (daemonToStop.exitCode === null) {
+        try { daemonToStop.kill('SIGKILL'); } catch {}
+      }
+    }, 1500);
+    forceTimer.unref();
   }
 }
 
 function refreshSnapshot() {
-  if (typeof MediaHub !== 'undefined' && MediaHub.status().running) return Promise.resolve(true);
+  if (typeof MediaHub !== 'undefined' && (MediaHub.status().running || MediaHub.videoClients.size > 0 || MediaHub.audioSubscribers.size > 0 || MediaHub.restartTimer)) return Promise.resolve(true);
+  if (snapshotDaemonRequested) return Promise.resolve(false);
   // Daemon 在跑（实测对 4K HEVC ssrtspd 不可行，已禁用启动）：仅做健康检测
   if (snapshotDaemon && !snapshotDaemon.killed && snapshotDaemon.exitCode === null) {
     if (!fs.existsSync(SNAPSHOT_PATH)) return Promise.resolve(false);
@@ -399,12 +673,30 @@ function refreshSnapshot() {
   isSnapshotRefreshing = true;
   const rtspUrl = config.camera.rtspUrl;
   const width = streamProfile.recommendedStreamWidth || config.camera.snapshotWidth || 640;
-  // -t 4s 平衡：HEVC GOP 通常 1-2s，4s 窗口稳定拿到 I-frame；probe 200K 减启动开销
-  const cmd = `ffmpeg -hide_banner -loglevel error -fflags nobuffer+flush_packets -flags low_delay -rtsp_transport tcp -probesize 200K -analyzeduration 200K -i "${rtspUrl}" -t 4 -an -vf "scale=${width}:-2:in_range=tv:out_range=pc" -frames:v 1 -update 1 -q:v 5 -y "${SNAPSHOT_PATH}"`;
-
   return new Promise((resolve) => {
-    exec(cmd, { timeout: 30000, shell: '/bin/bash' }, (error) => {
+    const ff = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error',
+      '-fflags', 'nobuffer+flush_packets', '-flags', 'low_delay',
+      '-rtsp_transport', 'tcp', '-probesize', '200K', '-analyzeduration', '200K',
+      '-i', rtspUrl, '-t', '4', '-an',
+      '-vf', `scale=${width}:-2:in_range=tv:out_range=pc`,
+      '-frames:v', '1', '-update', '1', '-q:v', '5', '-y', SNAPSHOT_PATH
+    ], { stdio: ['ignore', 'ignore', 'ignore'] });
+    snapshotRefreshProcess = ff;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      if (ff.exitCode === null) try { ff.kill('SIGKILL'); } catch {}
+    }, 12000);
+    ff.on('close', () => {
+      clearTimeout(timeout);
+      if (snapshotRefreshProcess !== ff) return resolve(false);
+      snapshotRefreshProcess = null;
       isSnapshotRefreshing = false;
+      if (snapshotDaemonRequested) {
+        snapshotDaemonRequested = false;
+        setTimeout(startSnapshotDaemon, 250);
+      }
       if (fs.existsSync(SNAPSHOT_PATH)) {
         const st = fs.statSync(SNAPSHOT_PATH);
         const ok = st.size > 5000 && st.mtimeMs > (Date.now() - 25000);
@@ -418,10 +710,16 @@ function refreshSnapshot() {
         }
         resolve(ok);
       } else {
-        console.log(`[Camera] Snapshot failed: ${error?.message?.slice(0, 80) || 'no file'}`);
+        console.log(`[Camera] Snapshot failed: ${timedOut ? 'timeout' : 'no file'}`);
         recordFrameHealth({ ok: false, reason: 'no-output' });
         resolve(false);
       }
+    });
+    ff.on('error', () => {
+      clearTimeout(timeout);
+      if (snapshotRefreshProcess === ff) snapshotRefreshProcess = null;
+      isSnapshotRefreshing = false;
+      resolve(false);
     });
   });
 }
@@ -581,10 +879,7 @@ function transcribeAudio() {
           const icon = transcript.has_speech ? '🗣️' : '🔊';
           console.log(`[Audio] ${icon} ${transcript.text.slice(0, 60)}`);
           // Fire audio-triggered automation rules
-          if (parsed?.matched_rules) {
-            AutomationEngine.handleMatches(parsed.matched_rules, transcript.text)
-              .catch(e => console.error('[Automation] audio handle error:', e.message));
-          }
+          AutomationEngine.updateMatches('audio', parsed?.matched_rules || [], transcript.text);
           resolve(transcript);
         } catch (e) {
           reject(e);
@@ -600,6 +895,16 @@ function transcribeAudio() {
 
 // ============ AI Vision Analysis ============
 let lastAnalysis = { text: '等待首次分析...', timestamp: 0, suggestions: [] };
+let analysisInFlight = null;
+const visionSseClients = new Set();
+
+function broadcastVision(event) {
+  const enriched = { ...event, timestamp: Date.now() };
+  const payload = `data: ${JSON.stringify(enriched)}\n\n`;
+  for (const client of visionSseClients) {
+    try { client.write(payload); } catch { visionSseClients.delete(client); }
+  }
+}
 
 // ============ Persistent Home Memory ============
 // A deliberately small, inspectable memory layer. It stores observations and
@@ -625,7 +930,11 @@ const MemoryEngine = {
       scene: parsed.scene,
       occupied: parsed.occupied,
       brightness: parsed.brightness || '',
-      status: Array.isArray(parsed.status) ? parsed.status.slice(0, 8) : []
+      status: Array.isArray(parsed.status) ? parsed.status.slice(0, 8) : [],
+      suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.slice(0, 5).map(item => ({
+        action: String(item?.action || '').trim().slice(0, 160),
+        domain: String(item?.domain || '').trim().slice(0, 30)
+      })).filter(item => item.action) : []
     };
     this.data.observations.unshift(entry);
     this.data.observations = this.data.observations.slice(0, 300);
@@ -644,6 +953,59 @@ const MemoryEngine = {
     this.data.feedback = this.data.feedback.slice(0, 200);
     this.save();
     return item;
+  },
+  removeFeedback(id) {
+    const index = this.data.feedback.findIndex(item => item.id === id);
+    if (index < 0) return false;
+    this.data.feedback.splice(index, 1);
+    this.save();
+    return true;
+  },
+  /** User-authored preferences guide reasoning but never authorize actions. */
+  promptFragment() {
+    const feedback = this.data.feedback.slice(0, 20).filter(item => item.text);
+    if (!feedback.length) return '';
+    const lines = feedback.map(item => `- ${item.rating > 0 ? '偏好' : '避免'}：${item.text.slice(0, 180)}`).join('\n');
+    return `\n\n【本机家庭偏好】\n${lines}\n这些内容仅用于理解、建议和回复，不构成设备执行授权；不得覆盖用户本次明确指令，也不得自行创建或执行自动化。`;
+  },
+  /**
+   * Mines repeated AI suggestions from recent observations. A candidate is
+   * surfaced only after three independent occurrences and remains inert until
+   * the user reviews it in the rule editor and explicitly saves it.
+   */
+  learnedCandidates() {
+    const groups = new Map();
+    for (const observation of this.data.observations.slice(0, 120)) {
+      for (const suggestion of observation.suggestions || []) {
+        const normalized = suggestion.action.replace(/[，。！？\s]/g, '').toLowerCase();
+        if (!normalized) continue;
+        const key = `${suggestion.domain || 'unknown'}:${normalized}`;
+        if (!groups.has(key)) groups.set(key, { action: suggestion.action, domain: suggestion.domain, observations: [] });
+        groups.get(key).observations.push(observation);
+      }
+    }
+    return [...groups.entries()].filter(([, group]) => group.observations.length >= 3).map(([key, group]) => {
+      const evidence = group.observations.slice(0, 12);
+      const statusCounts = new Map();
+      evidence.flatMap(item => item.status || []).forEach(status => statusCounts.set(status, (statusCounts.get(status) || 0) + 1));
+      const commonStatus = [...statusCounts.entries()].filter(([, count]) => count >= Math.ceil(evidence.length * 0.5)).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([status]) => status);
+      const hours = evidence.map(item => new Date(item.ts).getHours());
+      const averageHour = Math.round(hours.reduce((sum, hour) => sum + hour, 0) / hours.length);
+      const condition = commonStatus.length ? `检测到${commonStatus.join('、')}` : `出现与「${evidence[0]?.scene || '当前场景'}」相似的场景`;
+      let hash = 2166136261;
+      for (const char of key) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+      return {
+        id: `learned-${(hash >>> 0).toString(36)}`,
+        name: `建议：${group.action.slice(0, 28)}`,
+        condition,
+        action: group.action,
+        domain: group.domain,
+        occurrences: group.observations.length,
+        confidence: Math.min(95, 55 + group.observations.length * 6),
+        typicalHour: averageHour,
+        evidence: evidence.slice(0, 3).map(item => ({ ts: item.ts, scene: item.scene }))
+      };
+    }).sort((a, b) => b.confidence - a.confidence).slice(0, 8);
   },
   summary() {
     const recent = this.data.observations.slice(0, 80);
@@ -666,28 +1028,92 @@ const MemoryEngine = {
         `已收到 ${accepted} 次正向、${rejected} 次负向反馈`
       ],
       recent: this.data.observations.slice(0, 12),
-      feedback: this.data.feedback.slice(0, 12)
+      feedback: this.data.feedback.slice(0, 12),
+      learnedCandidates: this.learnedCandidates(),
+      learningThreshold: 3
     };
   }
 };
 MemoryEngine.load();
 
+function handleCorrectionSignal(correction) {
+  const quality = DecisionQuality.recordCorrection(correction);
+  if (!quality.shouldPause || !quality.item.ruleId) return;
+  const rule = AutomationEngine.rules.find(item => item.id === quality.item.ruleId);
+  if (!rule || !rule.enabled) return;
+  rule.enabled = false;
+  rule.pausedReason = `连续检测到 ${quality.correctionCount} 次用户纠正`;
+  rule.pausedAt = new Date().toISOString();
+  AutomationEngine.save();
+  console.warn(`[Automation] Rule "${rule.name}" paused after ${quality.correctionCount} corrections`);
+}
+
 // ============ Automation Rules Engine ============
 // Rules are evaluated piggyback on existing vision/audio analysis (zero extra LLM calls).
 // Matched rules → cooldown check → dry-run guard → processNLCommand → HA execute → SSE broadcast.
+function currentAutomationEvidence() {
+  const snapshot = HomeState.snapshot();
+  return {
+    revision: snapshot.revision,
+    observedAt: snapshot.observedAt,
+    spaces: Object.values(snapshot.spaces || {}).map(space => ({
+      id: space.id,
+      name: space.name,
+      occupancy: space.occupancy?.value,
+      confidence: space.occupancy?.confidence
+    })),
+    people: Object.values(snapshot.people || {}).map(person => ({
+      id: person.id,
+      name: person.name?.value || person.name,
+      confidence: person.identity?.confidence || person.confidence
+    })),
+    activities: Object.values(snapshot.activities || {}).slice(0, 5).map(activity => ({
+      label: activity.label?.value,
+      confidence: activity.label?.confidence
+    })),
+    environment: Object.fromEntries(Object.entries(snapshot.environment || {}).map(([key, value]) => [key, {
+      value: value.value,
+      unit: value.unit,
+      updatedAt: value.updatedAt
+    }]))
+  };
+}
+
 const AutomationEngine = {
   rules: [],
   history: [], // { id, ruleId, name, ts, scene, dryRun, actions, success, reply }
-  HISTORY_MAX: 100,
+  HISTORY_MAX: 500,
   sseClients: new Set(),
   lastTriggered: new Map(), // ruleId → timestamp
+  policyPending: new Map(), // ruleId → sustained-condition timer
+  policyActive: new Set(), // structured rules fire once per continuous scene
+  matchEpisodes: new RuleEpisodeGate(),
 
   load() {
     const auto = config.automation || {};
     this.rules = Array.isArray(auto.rules) ? auto.rules : [];
     this.enabled = auto.enabled !== false;
     this.defaultCooldown = auto.defaultCooldownSec || 300;
-    console.log(`[Automation] Loaded ${this.rules.length} rules (enabled=${this.enabled})`);
+    try {
+      const stored = JSON.parse(fs.readFileSync(ACTIVITY_HISTORY_PATH, 'utf8'));
+      this.history = Array.isArray(stored.history) ? stored.history.slice(0, this.HISTORY_MAX) : [];
+    } catch (e) {
+      this.history = [];
+      if (e.code !== 'ENOENT') console.error('[Activity] History load failed:', e.message);
+    }
+    console.log(`[Automation] Loaded ${this.rules.length} rules, ${this.history.length} historical activities (enabled=${this.enabled})`);
+  },
+
+  // Execution history is an append-style local audit trail. Atomic replacement
+  // prevents a service interruption from leaving partially written JSON.
+  saveHistory() {
+    try {
+      const nextPath = `${ACTIVITY_HISTORY_PATH}.next`;
+      fs.writeFileSync(nextPath, JSON.stringify({ version: 1, updatedAt: Date.now(), history: this.history }, null, 2));
+      fs.renameSync(nextPath, ACTIVITY_HISTORY_PATH);
+    } catch (e) {
+      console.error('[Activity] History save failed:', e.message);
+    }
   },
 
   save() {
@@ -698,15 +1124,75 @@ const AutomationEngine = {
       // Re-read disk to merge — prevents overwriting concurrent changes (e.g. token rotation)
       const onDisk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
       onDisk.automation = config.automation;
-      fs.writeFileSync(CONFIG_PATH, JSON.stringify(onDisk, null, 2));
+      writeJsonAtomic(CONFIG_PATH, onDisk);
     } catch (e) {
       console.error('[Automation] Save failed:', e.message);
     }
   },
 
+  /** Add a completed activity from voice, manual control, or automation. */
+  recordActivity(entry) {
+    const activity = {
+      id: entry.id || `evt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      ts: entry.ts || Date.now(),
+      name: entry.name || '系统操作',
+      source: entry.source || 'system',
+      command: entry.command || '',
+      context: entry.context || '',
+      executed: Array.isArray(entry.executed) ? entry.executed : [],
+      reply: entry.reply || '',
+      success: entry.success !== false,
+      dryRun: !!entry.dryRun
+    };
+    this.history.unshift(activity);
+    if (this.history.length > this.HISTORY_MAX) this.history.length = this.HISTORY_MAX;
+    this.saveHistory();
+    this.broadcast({ type: 'activity', ...activity });
+    return activity;
+  },
+
   rulesByTrigger(trigger) {
     if (!this.enabled) return [];
-    return this.rules.filter(r => r.enabled && (r.trigger === trigger || r.trigger === 'both'));
+    return this.rules.filter(r => r.enabled && !r.policy && (r.trigger === trigger || r.trigger === 'both'));
+  },
+
+  /**
+   * Re-evaluates structured rules whenever household evidence changes. A
+   * sustained timer prevents transient camera/sensor spikes from firing rules.
+   */
+  handleStateEvent(event) {
+    if (!this.enabled || event.type.startsWith('rule.') || event.type.startsWith('command.')) return;
+    const snapshot = HomeState.snapshot();
+    for (const rule of this.rules.filter(item => item.enabled && item.policy)) {
+      const cooldownMs = (rule.cooldownSec || this.defaultCooldown) * 1000;
+      if (Date.now() - (this.lastTriggered.get(rule.id) || 0) < cooldownMs) continue;
+      const result = evaluatePolicy(rule.policy, snapshot);
+      const pending = this.policyPending.get(rule.id);
+      if (!result.matched) {
+        if (pending?.timer) clearTimeout(pending.timer);
+        this.policyPending.delete(rule.id);
+        this.policyActive.delete(rule.id);
+        continue;
+      }
+      if (pending || this.policyActive.has(rule.id)) continue;
+      const durationMs = Math.max(0, Number(rule.policy.durationSec) || 0) * 1000;
+      const timer = setTimeout(() => {
+        this.policyPending.delete(rule.id);
+        const latest = evaluatePolicy(rule.policy, HomeState.snapshot());
+        if (!latest.matched) return;
+        this.policyActive.add(rule.id);
+        const context = latest.results.map(item => `${item.label || item.kind}（当前 ${item.actual}）`).join('；');
+        this.handleMatches([rule.id], context).catch(error => console.error('[Automation] structured rule failed:', error.message));
+      }, durationMs);
+      timer.unref?.();
+      this.policyPending.set(rule.id, { since: Date.now(), timer });
+    }
+  },
+
+  /** Fires only on entry into a matched scene, not on every analysis frame. */
+  updateMatches(trigger, matchedIds, context) {
+    const entered = this.matchEpisodes.update(trigger, matchedIds);
+    if (entered.length) this.handleMatches(entered, context).catch(error => console.error(`[Automation] ${trigger} scene error:`, error.message));
   },
 
   // Build a prompt fragment listing rules to evaluate
@@ -724,20 +1210,44 @@ const AutomationEngine = {
     for (const ruleId of matchedIds) {
       const rule = this.rules.find(r => r.id === ruleId);
       if (!rule || !rule.enabled) continue;
+      const correlationId = `rule-run-${now}-${rule.id}-${Math.random().toString(36).slice(2, 6)}`;
+      const matched = HomeState.emit({
+        type: 'rule.matched',
+        correlationId,
+        source: { adapter: 'automation', sourceId: rule.id },
+        occurredAt: now,
+        confidence: 0.7,
+        payload: {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          condition: rule.condition,
+          context: String(context || '').slice(0, 200),
+          evidence: currentAutomationEvidence()
+        }
+      });
       const cooldownMs = (rule.cooldownSec || this.defaultCooldown) * 1000;
       const last = this.lastTriggered.get(ruleId) || 0;
       if (now - last < cooldownMs) {
-        console.log(`[Automation] Rule "${rule.name}" matched but in cooldown (${Math.round((cooldownMs - (now - last)) / 1000)}s remaining)`);
+        const remainingSec = Math.round((cooldownMs - (now - last)) / 1000);
+        console.log(`[Automation] Rule "${rule.name}" matched but in cooldown (${remainingSec}s remaining)`);
+        HomeState.emit({
+          type: 'rule.cooldown',
+          correlationId,
+          causationId: matched.id,
+          source: { adapter: 'automation', sourceId: rule.id },
+          occurredAt: now,
+          payload: { ruleId: rule.id, ruleName: rule.name, remainingSec }
+        });
         continue;
       }
       this.lastTriggered.set(ruleId, now);
-      await this._fireRule(rule, context);
+      await this._fireRule(rule, context, correlationId, matched.id);
     }
   },
 
-  async _fireRule(rule, context) {
+  async _fireRule(rule, context, correlationId, matchedEventId) {
     const entry = {
-      id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: correlationId || `evt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       ruleId: rule.id,
       name: rule.name,
       ts: Date.now(),
@@ -750,10 +1260,39 @@ const AutomationEngine = {
       reply: '',
       success: false
     };
+    HomeState.emit({
+      type: 'rule.triggered',
+      correlationId: entry.id,
+      causationId: matchedEventId,
+      source: { adapter: 'automation', sourceId: rule.id },
+      occurredAt: entry.ts,
+      payload: { ruleId: rule.id, ruleName: rule.name, condition: rule.condition, action: rule.action, dryRun: !!rule.dryRun }
+    });
     console.log(`[Automation] 🔔 Rule "${rule.name}" fired (dryRun=${rule.dryRun})`);
     this.broadcast({ type: 'fired', ...entry });
 
     try {
+      // Structured observation rules have already been evaluated against the
+      // household state. Do not call the command model or resolve devices until
+      // the founder explicitly disables dry-run mode.
+      if (rule.dryRun && rule.policy) {
+        entry.reply = `[观察模式·未执行] ${rule.action}`;
+        entry.success = true;
+      } else if (rule.policy?.actionTarget) {
+        const target = rule.policy.actionTarget;
+        const entity = await haRequest('GET', `/api/states/${encodeURIComponent(target.entityId)}`);
+        const records = await executeServiceSafe({
+          domain: target.domain,
+          service: target.service,
+          params: {},
+          correlationId: entry.id
+        }, entity);
+        entry.executed.push(...records);
+        entry.success = records.length > 0 && records.every(record => record.ok || record.skipped);
+        entry.reply = entry.success
+          ? `${entity.attributes?.friendly_name || target.entityId}${records.every(record => record.skipped) ? '已是目标状态' : '已执行并验证'}`
+          : `执行失败：${records.find(record => !record.ok)?.error || '设备未达到目标状态'}`;
+      } else {
       // Broadcast intent shortcut — rule action is literal "speak X" via Xiaoai.
       // Bypass home parser entirely so phrases like "小爱说『离电视远一点』" don't
       // get rejected as "not a device control command".
@@ -775,6 +1314,7 @@ const AutomationEngine = {
         } else if (parseResult.understood && parseResult.actions?.length > 0) {
           const states = await haRequest('GET', '/api/states');
           for (const action of parseResult.actions) {
+            action.correlationId = entry.id;
             const matches = states.filter(e => {
               const domain = e.entity_id.split('.')[0];
               const name = e.attributes?.friendly_name || '';
@@ -791,21 +1331,36 @@ const AutomationEngine = {
           // condition as the "user intent" hint so phrasing matches the trigger context.
           const ruleHint = rule.condition || rule.name || '自动化规则触发';
           entry.reply = (await naturalizeReply(entry.executed, ruleHint)) || entry.reply || '已执行';
-          entry.success = true;
+          entry.success = entry.executed.length > 0 && entry.executed.every(record => record.ok || record.skipped);
         } else {
           entry.reply = parseResult.reply || '未理解动作';
         }
-      }
+      }}
     } catch (e) {
       entry.reply = `执行失败: ${e.message}`;
     }
 
-    this.history.unshift(entry);
-    if (this.history.length > this.HISTORY_MAX) this.history.length = this.HISTORY_MAX;
+    HomeState.emit({
+      type: entry.dryRun ? 'rule.observed' : (entry.success ? 'rule.completed' : 'rule.failed'),
+      correlationId: entry.id,
+      source: { adapter: 'automation', sourceId: rule.id },
+      occurredAt: Date.now(),
+      payload: {
+        ruleId: rule.id,
+        ruleName: rule.name,
+        condition: rule.condition,
+        action: rule.action,
+        reply: entry.reply,
+        executedCount: entry.executed.length,
+        error: entry.success || entry.dryRun ? undefined : entry.reply
+      }
+    });
+
+    this.recordActivity({ ...entry, source: 'automation' });
 
     // Broadcast reply through Xiaoai speaker (skip dryRun observation runs to avoid noise)
     if (entry.success && !entry.dryRun && entry.reply) {
-      speakReply(entry.reply, 'ruleTrigger');
+      speakReply(entry.reply, 'ruleTrigger', { origin: 'automation' });
     }
 
     this.broadcast({ type: 'completed', ...entry });
@@ -820,7 +1375,9 @@ const AutomationEngine = {
       action: rule.action || '',
       cooldownSec: Number(rule.cooldownSec) || this.defaultCooldown,
       enabled: rule.enabled !== false,
-      dryRun: rule.dryRun !== false,  // default true (safe)
+      dryRun: rule.policy ? true : rule.dryRun !== false,  // generated policies always start in observation mode
+      ...(rule.policy ? { policy: rule.policy } : {}),
+      ...(rule.explanation ? { explanation: rule.explanation } : {}),
       createdAt: rule.createdAt || new Date().toISOString()
     };
     this.rules.push(r);
@@ -831,6 +1388,10 @@ const AutomationEngine = {
   update(id, patch) {
     const idx = this.rules.findIndex(r => r.id === id);
     if (idx === -1) return null;
+    const current = this.rules[idx];
+    if (patch.dryRun === false && current.policy && current.explanation?.requiresTargetConfirmation) {
+      throw new Error('存在多个候选设备，确认具体目标前不能授权自动执行');
+    }
     this.rules[idx] = { ...this.rules[idx], ...patch, id };
     this.save();
     return this.rules[idx];
@@ -853,7 +1414,7 @@ const AutomationEngine = {
   }
 };
 
-function analyzeSnapshot() {
+function analyzeSnapshotOnce() {
   return new Promise((resolve, reject) => {
     if (!fs.existsSync(SNAPSHOT_PATH)) {
       return reject(new Error('No snapshot available'));
@@ -870,7 +1431,14 @@ function analyzeSnapshot() {
 - status: 环境状态关键词（逗号分隔）
 - suggestions: JSON数组，每项包含 action(操作描述) 和 domain(light/cover/climate/switch)
 请用JSON格式回复。`;
-    const prompt = basePrompt + AutomationEngine.promptFragment('vision');
+    // Use the latest completed local result in the prompt and refresh it in the
+    // background. Apple Vision must never block camera, voice, or web requests.
+    const localIdentity = FaceIdentity.lastRecognition;
+    FaceIdentity.refreshRecognition(SNAPSHOT_PATH);
+    const identityPrompt = localIdentity?.matched
+      ? `\n\n本机人脸识别结果：画面中面积最大的人脸是「${localIdentity.name}」（本地置信度 ${Math.round(localIdentity.confidence * 100)}%）。请结合画面描述此人正在做什么，并用该姓名评估规则；不得推断其他人的身份。`
+      : '\n\n本机未确认画面人物身份。不得根据外貌猜测姓名。';
+    const prompt = basePrompt + identityPrompt + MemoryEngine.promptFragment() + AutomationEngine.promptFragment('vision');
 
     const payload = JSON.stringify({
       model: config.ai.model || 'qwen-vl-plus',
@@ -902,9 +1470,13 @@ function analyzeSnapshot() {
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            throw new Error(`Vision API HTTP ${res.statusCode}: ${data.slice(0, 160)}`);
+          }
           const result = JSON.parse(data);
           TokenUsage.recordFromResponse(config.ai.model || 'qwen-vl-plus', 'vision_analyze', result);
           const content = result.choices?.[0]?.message?.content || '';
+          if (!content) throw new Error('Vision API returned no content');
           let parsed;
           try {
             const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -921,13 +1493,12 @@ function analyzeSnapshot() {
             timestamp: Date.now(),
             suggestions: parsed?.suggestions || []
           };
+          HomeState.ingestVision(parsed, FaceIdentity.lastRecognition, lastAnalysis.timestamp);
+          broadcastVision({ type: 'complete', analysis: lastAnalysis });
           MemoryEngine.recordObservation(parsed);
           console.log(`[AI] Analysis complete: ${parsed?.scene || content.slice(0, 50)}`);
           // Fire automation rules that matched
-          if (parsed?.matched_rules) {
-            AutomationEngine.handleMatches(parsed.matched_rules, parsed.scene || content.slice(0, 200))
-              .catch(e => console.error('[Automation] vision handle error:', e.message));
-          }
+          AutomationEngine.updateMatches('vision', parsed?.matched_rules || [], parsed?.scene || content.slice(0, 200));
           resolve(lastAnalysis);
         } catch (e) {
           reject(e);
@@ -935,31 +1506,93 @@ function analyzeSnapshot() {
       });
     });
 
+    req.setTimeout(30000, () => req.destroy(new Error('Vision API timeout')));
     req.on('error', reject);
     req.write(payload);
     req.end();
   });
 }
 
-// ============ Home Assistant Proxy ============
-function haRequest(method, apiPath, body) {
+/**
+ * Runs at most one vision-model request at a time. Concurrent triggers share
+ * the same promise so manual requests, motion events and heartbeat analysis do
+ * not multiply model cost or race to overwrite the newest result.
+ */
+function analyzeSnapshot(reason = 'manual') {
+  if (analysisInFlight) return analysisInFlight;
+  broadcastVision({ type: 'analyzing', reason });
+  analysisInFlight = analyzeSnapshotOnce()
+    .catch(error => {
+      broadcastVision({ type: 'error', reason, error: error.message });
+      throw error;
+    })
+    .finally(() => { analysisInFlight = null; });
+  return analysisInFlight;
+}
+
+function readVisualFingerprint() {
   return new Promise((resolve, reject) => {
-    const haUrl = new URL(config.homeAssistant.url);
-    const options = {
+    if (!fs.existsSync(SNAPSHOT_PATH)) return reject(new Error('No snapshot available'));
+    const ff = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-i', SNAPSHOT_PATH,
+      '-vf', 'scale=16:16', '-pix_fmt', 'gray', '-f', 'rawvideo', 'pipe:1'
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const chunks = [];
+    ff.stdout.on('data', chunk => chunks.push(chunk));
+    ff.on('error', reject);
+    ff.on('close', code => {
+      const pixels = Buffer.concat(chunks);
+      if (code !== 0 || pixels.length < 256) return reject(new Error('snapshot fingerprint failed'));
+      resolve(pixels.subarray(0, 256));
+    });
+  });
+}
+
+function visualDifference(previous, next) {
+  if (!previous || previous.length !== next.length) return 1;
+  let total = 0;
+  for (let i = 0; i < next.length; i++) total += Math.abs(next[i] - previous[i]);
+  return total / (next.length * 255);
+}
+
+// ============ Home Assistant Proxy ============
+/**
+ * Builds a Home Assistant request using the protocol configured in its URL.
+ * HA is commonly exposed through an HTTPS reverse proxy on a non-standard port;
+ * sending plain HTTP to that endpoint returns an nginx error page that must not
+ * be mistaken for a valid HA API response.
+ */
+function buildHaRequest(apiPath, extra = {}) {
+  const haUrl = new URL(config.homeAssistant.url);
+  const transport = haUrl.protocol === 'https:' ? https : http;
+  const basePath = haUrl.pathname.replace(/\/$/, '');
+  return {
+    transport,
+    options: {
       hostname: haUrl.hostname,
-      port: haUrl.port || 8123,
-      path: apiPath,
-      method: method,
+      port: haUrl.port || (haUrl.protocol === 'https:' ? 443 : 8123),
+      path: `${basePath}${apiPath}`,
       headers: {
         'Authorization': `Bearer ${config.homeAssistant.token}`,
         'Content-Type': 'application/json'
-      }
-    };
+      },
+      ...extra
+    }
+  };
+}
 
-    const req = http.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
+function haRequest(method, apiPath, body) {
+  return new Promise((resolve, reject) => {
+    const { transport, options } = buildHaRequest(apiPath, { method, timeout: 8000 });
+
+    const req = transport.request(options, (res) => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
       res.on('end', () => {
+        const data = decodeUtf8Body(chunks);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          return reject(new Error(`HA HTTP ${res.statusCode}: ${data.slice(0, 160)}`));
+        }
         try {
           resolve(JSON.parse(data));
         } catch (e) {
@@ -968,23 +1601,32 @@ function haRequest(method, apiPath, body) {
       });
     });
 
+    req.on('timeout', () => req.destroy(new Error('HA request timeout')));
     req.on('error', reject);
     if (body) req.write(JSON.stringify(body));
     req.end();
   });
 }
 
+/** Start the low-latency HA event channel; REST sampling remains a fallback. */
+function startHaRealtime() {
+  try { HaRealtime?.stop(); } catch {}
+  HaRealtime = new HaRealtimeClient({
+    url: config.homeAssistant.url,
+    token: config.homeAssistant.token,
+    onStateChanged: (entity, occurredAt) => HomeState.ingestHaStates([entity], occurredAt),
+    onStatus: status => {
+      if (status.error && status.retryCount <= 1) console.warn('[HA Realtime]', status.error);
+    }
+  });
+  try { HaRealtime.start(); }
+  catch (error) { console.warn('[HA Realtime] unavailable, REST fallback active:', error.message); }
+}
+
 function haBinaryRequest(apiPath) {
   return new Promise((resolve, reject) => {
-    const haUrl = new URL(config.homeAssistant.url);
-    const req = http.request({
-      hostname: haUrl.hostname,
-      port: haUrl.port || 8123,
-      path: apiPath,
-      method: 'GET',
-      headers: { 'Authorization': `Bearer ${config.homeAssistant.token}` },
-      timeout: 5000
-    }, res => {
+    const { transport, options } = buildHaRequest(apiPath, { method: 'GET', timeout: 5000 });
+    const req = transport.request(options, res => {
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
       res.on('end', () => {
@@ -999,15 +1641,11 @@ function haBinaryRequest(apiPath) {
 }
 
 function proxyHaCameraStream(req, res, entity) {
-  const haUrl = new URL(config.homeAssistant.url);
-  const upstream = http.request({
-    hostname: haUrl.hostname,
-    port: haUrl.port || 8123,
-    path: `/api/camera_proxy_stream/${encodeURIComponent(entity)}`,
-    method: 'GET',
-    headers: { 'Authorization': `Bearer ${config.homeAssistant.token}` },
-    timeout: 10000
-  }, cameraRes => {
+  const { transport, options } = buildHaRequest(
+    `/api/camera_proxy_stream/${encodeURIComponent(entity)}`,
+    { method: 'GET', timeout: 10000 }
+  );
+  const upstream = transport.request(options, cameraRes => {
     if (cameraRes.statusCode < 200 || cameraRes.statusCode >= 300) {
       res.writeHead(502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: `HA camera stream HTTP ${cameraRes.statusCode}` }));
@@ -1036,6 +1674,16 @@ function proxyHaCameraStream(req, res, entity) {
 }
 
 // ============ Natural Language Command ============
+function currentCommandContext() {
+  const household = HomeState.snapshot();
+  const spatial = SpatialEngine.snapshot(household);
+  const active = spatial.contexts.filter(item => ['entering', 'active', 'working', 'dining', 'watching'].includes(item.state));
+  if (active.length !== 1) return '\n\n【当前空间上下文】当前无法唯一确定用户所在空间；含糊指令必须询问房间，不得猜测。';
+  const context = active[0];
+  const space = household.spaces?.[context.spaceId] || {};
+  const environment = Object.entries(space.environment || {}).map(([key, value]) => `${key}=${value.value}${value.unit || ''}`).join('，');
+  return `\n\n【当前空间上下文】可靠判断用户当前在${context.spaceName}，情境为${context.state}${environment ? `，环境：${environment}` : ''}。用户说“有点暗、太热、别这么亮、还是刚才那样”等含糊表达时，优先作用于该空间；如果状态 uncertain 或存在多个有人空间，必须询问，不能猜测。`;
+}
 function processNLCommand(command) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
@@ -1064,7 +1712,7 @@ function processNLCommand(command) {
 }
 
 target_keyword 是设备名称中文关键词（如"客厅"），用于匹配 entity_id 的 friendly_name。
-reply 要符合 actions 实际效果——如果你输出了 turn_on(cool)+set_temperature，就说"已为您打开客厅空调制冷至24度"。不要说没做的事。`
+reply 要符合 actions 实际效果——如果你输出了 turn_on(cool)+set_temperature，就说"已为您打开客厅空调制冷至24度"。不要说没做的事。${MemoryEngine.promptFragment()}${currentCommandContext()}`
       }, {
         role: 'user',
         content: command
@@ -1118,26 +1766,21 @@ reply 要符合 actions 实际效果——如果你输出了 turn_on(cool)+set_t
 // calls: `set_hvac_mode` then optional `set_temperature`. We normalize all
 // climate "start cooling/heating" actions through this two-step path.
 
-// Fuzzy keyword → entity friendly_name matching.
-// Handles cases like keyword="电风扇" vs name="米家风扇 风扇" by:
-//  1. exact substring (original behavior)
-//  2. strip common noise prefixes ("电"/"小"/"大"/"个"/"那个"/"这个")
-//  3. 2-gram fallback — any 2-char window of keyword found in name
+// Conservative keyword → entity friendly_name matching.
+// Device control must require one continuous phrase. The former 2-character
+// fallback made "小米网关" match every device containing "小米", causing a
+// single spoken command to operate unrelated switches and indicator lights.
 function fuzzyKeywordMatch(name, keyword) {
   if (!keyword || !name) return false;
   if (name.includes(keyword)) return true;
-  const stripped = keyword.replace(/^(电|小|大|个|那个|这个|这|那)/, '');
+  // Only remove conversational determiners. Product-name characters such as
+  // "小" in "小米" are meaningful and must never be stripped.
+  const stripped = keyword.replace(/^(那个|这个|这台|那台|这个设备|那个设备)/, '');
   if (stripped && stripped !== keyword && name.includes(stripped)) return true;
-  if (keyword.length >= 2) {
-    for (let i = 0; i <= keyword.length - 2; i++) {
-      const bigram = keyword.slice(i, i + 2);
-      if (name.includes(bigram)) return true;
-    }
-  }
   return false;
 }
 
-async function executeServiceSafe(action, entity) {
+async function executeServiceSafeRaw(action, entity) {
   const out = [];
   const domain = action.domain;
   const service = action.service;
@@ -1252,6 +1895,118 @@ async function executeServiceSafe(action, entity) {
   return out;
 }
 
+function actionReachedState(record, entity) {
+  if (!record?.ok || !entity) return false;
+  const state = entity.state;
+  const attrs = entity.attributes || {};
+  if (record.service === 'turn_on') return !['off', 'unavailable', 'unknown'].includes(state);
+  if (record.service === 'turn_off') return state === 'off';
+  if (record.service === 'open_cover') return state === 'open' || attrs.current_position === 100;
+  if (record.service === 'close_cover') return state === 'closed' || attrs.current_position === 0;
+  if (record.service === 'set_hvac_mode') return state === record.detail;
+  if (record.service === 'set_temperature') {
+    const target = Number(String(record.detail || '').replace('°', ''));
+    return Number.isFinite(target) && Number.isFinite(Number(attrs.temperature)) && Math.abs(Number(attrs.temperature) - target) < 0.5;
+  }
+  if (record.service === 'set_fan_mode') return attrs.fan_mode === record.detail;
+  // Some service domains have no immediate, deterministic state projection.
+  // HA acceptance remains observable but is explicitly marked unverified.
+  return null;
+}
+
+async function verifyActionRecord(record) {
+  if (!record?.ok || !record.entity_id) return { verified: false, entity: null };
+  const startedAt = Date.now();
+  let attempts = 0;
+  // Slow Zigbee/Wi-Fi devices often update HA after more than one second.
+  // Polling is bounded and never re-sends the physical command.
+  for (const delayMs of [250, 750, 1500, 2500]) {
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+    attempts += 1;
+    try {
+      const entity = await haRequest('GET', `/api/states/${encodeURIComponent(record.entity_id)}`);
+      const reached = actionReachedState(record, entity);
+      HomeState.ingestHaStates([entity], Date.now());
+      if (reached === true) return { verified: true, entity, attempts, elapsedMs: Date.now() - startedAt };
+      if (reached === null) return { verified: null, entity, attempts, elapsedMs: Date.now() - startedAt };
+    } catch {}
+  }
+  return { verified: false, entity: null, attempts, elapsedMs: Date.now() - startedAt };
+}
+
+/**
+ * Executes one entity action and records the complete request → dispatch →
+ * verification lifecycle in the household event stream.
+ */
+async function executeServiceSafe(action, entity) {
+  const correlationId = action.correlationId || `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const baseEvent = {
+    correlationId,
+    source: { adapter: 'system', sourceId: 'action-executor' },
+    payload: {
+      entityId: entity.entity_id,
+      name: entity.attributes?.friendly_name || entity.entity_id,
+      domain: action.domain,
+      service: action.service,
+      params: action.params || {},
+      previousState: entity.state
+    }
+  };
+  const requested = HomeState.emit({ ...baseEvent, type: 'command.requested' });
+  const records = await executeServiceSafeRaw(action, entity);
+
+  for (const record of records) {
+    if (record.skipped) {
+      HomeState.emit({ ...baseEvent, type: 'command.skipped', causationId: requested.id, payload: { ...baseEvent.payload, reason: record.reason } });
+      continue;
+    }
+    if (!record.ok) {
+      HomeState.emit({ ...baseEvent, type: 'command.failed', causationId: requested.id, payload: { ...baseEvent.payload, error: record.error || 'dispatch failed' } });
+      continue;
+    }
+
+    const dispatched = HomeState.emit({
+      ...baseEvent,
+      type: 'command.dispatched',
+      causationId: requested.id,
+      payload: { ...baseEvent.payload, effectiveService: record.service, detail: record.detail || '' }
+    });
+    HomeState.emit({
+      ...baseEvent,
+      type: 'command.verifying',
+      causationId: dispatched.id,
+      payload: { ...baseEvent.payload, effectiveService: record.service }
+    });
+    const verification = await verifyActionRecord(record);
+    record.verified = verification.verified;
+    if (verification.verified === false) {
+      record.ok = false;
+      record.error = '设备状态未达到目标';
+      HomeState.emit({
+        ...baseEvent,
+        type: 'command.failed',
+        causationId: dispatched.id,
+        payload: { ...baseEvent.payload, effectiveService: record.service, error: record.error, verificationAttempts: verification.attempts, verificationElapsedMs: verification.elapsedMs }
+      });
+    } else {
+      HomeState.emit({
+        ...baseEvent,
+        type: verification.verified === true ? 'command.verified' : 'command.accepted_unverified',
+        causationId: dispatched.id,
+        payload: {
+          ...baseEvent.payload,
+          effectiveService: record.service,
+          verified: verification.verified,
+          resultingState: verification.entity?.state,
+          verificationAttempts: verification.attempts,
+          verificationElapsedMs: verification.elapsedMs
+        }
+      });
+    }
+  }
+  return records;
+}
+
 // === Idempotency: predict whether an action would be a no-op given current state ===
 // Returns {skip: bool, reason: string}. Used by executeServiceSafe to short-circuit
 // unnecessary HA service calls (e.g., "关闭所有空调" when most are already off).
@@ -1280,21 +2035,18 @@ function shouldSkipAction(action, entity) {
       return { skip: true, reason: `已是「${params.preset_mode}」` };
   }
   if (domain === 'light') {
-    if (service === 'turn_off' && (state === 'off' || state === 'unavailable')) return { skip: true, reason: '已关闭' };
-    if (service === 'turn_on' && state === 'on') {
-      // changing brightness / color → not idempotent
-      if (params.brightness != null || params.brightness_pct != null ||
-          params.color_temp_kelvin != null || params.color_temp != null ||
-          params.rgb_color != null || params.hs_color != null || params.kelvin != null) {
-        return { skip: false };
-      }
-      return { skip: true, reason: '已打开' };
-    }
+    // Light state reported by some Xiaomi gateway integrations can remain stale
+    // after a physical/app-side change. HA turn_on/turn_off are idempotent, so
+    // always send them instead of allowing cached state to suppress a real
+    // automation action. Brightness/color operations already require a call.
+    if (service === 'turn_on' || service === 'turn_off') return { skip: false };
   }
 
-  // Climate: idempotent on turn_off when off; same hvac_mode; same target temp + same mode
+  // Climate integrations can expose a stale `off` state while the physical
+  // appliance is still running. `turn_off` is itself idempotent, so an explicit
+  // user shutdown must always be dispatched instead of trusting cached state.
   if (domain === 'climate') {
-    if (service === 'turn_off' && (state === 'off' || state === 'unavailable')) return { skip: true, reason: '已关闭' };
+    if (service === 'turn_off') return { skip: false };
     if (service === 'set_hvac_mode' && params.hvac_mode != null && state === params.hvac_mode)
       return { skip: true, reason: `已是 ${params.hvac_mode} 模式` };
     if (service === 'set_temperature' && typeof params.temperature === 'number' &&
@@ -1536,6 +2288,7 @@ async function computeEnvSnapshot() {
   try {
     const states = await haRequest('GET', '/api/states');
     if (!Array.isArray(states)) return null;
+    HomeState.ingestHaStates(states, Date.now());
 
     // --- Temperature: prefer climate.current_temperature (one per room) ---
     const roomTemps = []; // { room, temp }
@@ -1670,8 +2423,20 @@ async function sampleEnvHistory() {
 async function answerLocalHomeQuestion(command) {
   const text = String(command || '').trim();
   if (!text) return null;
+  const householdAnswer = answerHouseholdHistoryQuestion({
+    text,
+    rooms: config.rooms || [],
+    ledger: RuntimeStore,
+    currentState: HomeState.snapshot()
+  });
+  if (householdAnswer) return householdAnswer;
   const weatherZh = { clear: '晴', sunny: '晴', partlycloudy: '多云间晴', cloudy: '多云', fog: '有雾', rainy: '有雨', pouring: '大雨', lightning: '雷雨', lightning_rainy: '雷阵雨', snowy: '有雪', snowy_rainy: '雨夹雪', windy: '有风', windy_variant: '大风', hail: '冰雹', exceptional: '异常天气' };
   try {
+    const deviceStatusQuery = parseDeviceStatusQuestion(text, config.rooms || []);
+    if (deviceStatusQuery) {
+      const states = await haRequest('GET', '/api/states');
+      return answerDeviceStatusQuestion({ text, states, rooms: config.rooms || [] });
+    }
     if (/(温度|几度|多少度)/.test(text)) {
       const states = await haRequest('GET', '/api/states');
       const room = (config.rooms || []).map(r => r.name).find(name => text.includes(name)) || '';
@@ -1719,7 +2484,86 @@ async function answerLocalHomeQuestion(command) {
   }
   return null;
 }
-function chitchatLLM(command) {
+
+/**
+ * Answers a read-only question from the latest camera frame. The prompt makes
+ * absence explicitly frame-scoped: not seeing an object is not proof that the
+ * object is absent from the whole room or outside the camera field of view.
+ */
+function answerVisualQuestion(command) {
+  return new Promise((resolve) => {
+    if (!isVisualQuestion(command)) return resolve(null);
+    if (!fs.existsSync(SNAPSHOT_PATH)) {
+      return resolve({ ok: false, reply: '当前没有可用的摄像头画面，暂时无法确认。', source: 'visual_snapshot' });
+    }
+    let imageBase64;
+    let capturedAt;
+    try {
+      const stat = fs.statSync(SNAPSHOT_PATH);
+      imageBase64 = fs.readFileSync(SNAPSHOT_PATH).toString('base64');
+      capturedAt = stat.mtimeMs;
+    } catch {
+      return resolve({ ok: false, reply: '读取摄像头画面失败，暂时无法确认。', source: 'visual_snapshot' });
+    }
+
+    const prompt = `你是知家 家庭视觉问答助手。请只根据这张最新摄像头画面回答用户问题：“${String(command).slice(0, 120)}”。
+规则：
+1. 只描述画面中可见事实，不使用常识猜测，不虚构摄像头外的信息。
+2. 如果看见目标，回答“当前画面中看到了……”并简述位置。
+3. 如果没看见目标，只能回答“当前画面中没有看到……”，不得声称整个房间一定没有。
+4. 如果画面不是用户询问的房间、目标被遮挡或画面不清晰，明确回答无法确认。
+5. 不识别或猜测未录入人员身份，不执行任何设备操作。
+6. 使用一句自然中文回答，不超过45字，不要 Markdown。`;
+    const payload = JSON.stringify({
+      model: config.ai.model || 'qwen-vl-plus',
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}` } }
+      ] }],
+      max_tokens: 100,
+      temperature: 0.1
+    });
+    const apiUrl = new URL(config.ai.baseUrl);
+    const req = https.request({
+      hostname: apiUrl.hostname,
+      port: apiUrl.port || 443,
+      path: apiUrl.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.ai.apiKey}`,
+        'Content-Length': Buffer.byteLength(payload)
+      },
+      timeout: 12_000
+    }, res => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          if (res.statusCode < 200 || res.statusCode >= 300) throw new Error(`HTTP ${res.statusCode}`);
+          const parsed = JSON.parse(data);
+          TokenUsage.recordFromResponse(config.ai.model || 'qwen-vl-plus', 'visual_qa', parsed);
+          const reply = String(parsed.choices?.[0]?.message?.content || '').replace(/[\r\n]+/g, ' ').trim();
+          if (!reply) throw new Error('empty reply');
+          console.log(`[Visual QA] "${command}" → "${reply}"`);
+          resolve({ ok: true, reply, source: 'visual_snapshot', capturedAt });
+        } catch (error) {
+          console.error('[Visual QA] failed:', error.message);
+          resolve({ ok: false, reply: '视觉分析暂时失败，请稍后再问一次。', source: 'visual_snapshot' });
+        }
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', error => {
+      console.error('[Visual QA] request failed:', error.message);
+      resolve({ ok: false, reply: '视觉分析暂时失败，请稍后再问一次。', source: 'visual_snapshot' });
+    });
+    req.write(payload);
+    req.end();
+  });
+}
+
+function chitchatLLM(command, conversationMessages = []) {
   return new Promise((resolve) => {
     const qa = config.voice?.qa || {};
     if (qa.enabled === false) return resolve({ ok: false, reply: '', source: 'disabled' });
@@ -1734,7 +2578,8 @@ function chitchatLLM(command) {
     const payload = JSON.stringify({
       model,
       messages: [
-        { role: 'system', content: systemPrompt },
+        { role: 'system', content: `${systemPrompt}\n你正在与用户连续对话。可以结合最近对话理解“那卧室呢”“为什么”等追问，但不得虚构家庭状态或声称执行了设备操作。` },
+        ...conversationMessages.slice(-16),
         { role: 'user', content: String(command) }
       ],
       max_tokens: maxTokens,
@@ -1798,40 +2643,113 @@ function chitchatLLM(command) {
 
 // One persistent RTSP ingest fans out video, audio and periodic AI snapshots.
 // This avoids both the old video/voice mutex and the latency of HA transcoding.
+const conversationConfig = config.voiceControl?.conversation || {};
+const VoiceConversation = new VoiceConversationSession({
+  enabled: conversationConfig.enabled !== false,
+  idleTimeoutMs: (conversationConfig.idleTimeoutSec || 60) * 1000,
+  maxTurns: conversationConfig.maxTurns || 8
+});
+
 const MediaHub = {
   ff: null,
   videoClients: new Set(),
+  backpressuredVideoClients: new WeakSet(),
   audioSubscribers: new Set(),
   jpegBuffer: Buffer.alloc(0),
   restartTimer: null,
   lastSnapshotPublish: 0,
   videoBytes: 0,
+  lastVideoAt: 0,
+  ffStartedAt: 0,
+  watchdogTimer: null,
   audioBytes: 0,
+  audioUnavailable: false,
+  lastError: null,
+  transportFallback: null,
+  currentTransport: null,
+  corruptFrames: 0,
+  lastCorruptFrameAt: 0,
   boundary: 'novahubframe',
 
   ensureStarted() {
-    if (this.ff && !this.ff.killed && this.ff.exitCode === null) return;
+    if (this.ff && this.ff.exitCode === null) return;
+    // Some NVRs allow only one active media delivery session per RTSP URL.
+    // Wait for the snapshot daemon's TEARDOWN to reach the server before
+    // opening the shared live session, otherwise the new connection may
+    // complete RTSP negotiation but receive zero RTP packets.
+    if (snapshotDaemon && snapshotDaemon.exitCode === null) {
+      stopSnapshotDaemon('shared media hub waiting for RTSP handoff');
+      if (this.restartTimer) clearTimeout(this.restartTimer);
+      this.restartTimer = setTimeout(() => { this.restartTimer = null; this.ensureStarted(); }, 1500);
+      return;
+    }
+    stopSnapshotDaemon('shared media hub starting');
+    if (snapshotRefreshProcess && !snapshotRefreshProcess.killed) {
+      try { snapshotRefreshProcess.kill('SIGKILL'); } catch {}
+      snapshotRefreshProcess = null;
+      isSnapshotRefreshing = false;
+    }
     if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null; }
-    const width = config.camera.streamWidth || 1280;
-    const fps = Math.max(8, Math.min(config.camera.streamFps || 15, 20));
+    this.corruptFrames = 0;
+    this.lastCorruptFrameAt = 0;
+    if (!this.audioUnavailable) this.lastError = null;
+    // The dashboard preview favours immediate interaction over surveillance
+    // recording quality. Large MJPEG frames plus animated glass UI saturate
+    // Chromium's compositor and make the whole home view feel sluggish.
+    const width = Math.min(config.camera.streamWidth || 960, 960);
+    const fps = Math.max(2, Math.min(config.camera.streamFps || 10, 22));
+    const includeAudio = this.audioSubscribers.size > 0 && !this.audioUnavailable;
+    // forceSnapshotMode is also a persisted compatibility hint, so the first
+    // client after boot gets the safe transport even before ffprobe completes.
+    const highResolutionSource = streamProfile.width ? streamProfile.width >= 3000 : config.camera.forceSnapshotMode === true;
+    // Synology-style relays can corrupt large H.264 access units only on RTSP
+    // interleaved TCP. A large UDP reorder/receive buffer produced complete 4K
+    // frames in compatibility probing; smaller streams keep TCP reliability.
+    const rtspTransport = this.transportFallback || (highResolutionSource ? 'udp' : 'tcp');
+    this.currentTransport = rtspTransport;
+    const strictTcpDecode = rtspTransport === 'tcp' && !this.transportFallback && config.camera.forceSnapshotMode !== true;
     const args = [
-      '-hide_banner', '-loglevel', 'error',
-      '-rtsp_transport', 'udp',
+      '-hide_banner', '-loglevel', 'warning',
+      // Use one stable TCP session for both tracks. Some cameras either reject
+      // or starve a second RTSP session, which previously made video and voice
+      // compete whenever camera-microphone listening was enabled.
+      '-fflags', strictTcpDecode ? 'genpts+discardcorrupt' : 'genpts',
+      // A damaged predicted frame must be dropped, not concealed and emitted
+      // as a striped JPEG. This is especially important for 4K NVR relays,
+      // where one missing H.264 reference slice can visually poison many
+      // following frames until the next IDR.
+      ...(strictTcpDecode ? ['-err_detect', 'explode'] : []),
+      '-probesize', rtspTransport === 'udp' && highResolutionSource ? '8000000' : '2000000',
+      '-analyzeduration', rtspTransport === 'udp' && highResolutionSource ? '2000000' : '1000000',
+      '-rtsp_transport', rtspTransport,
+      ...(rtspTransport === 'tcp' ? ['-rtsp_flags', 'prefer_tcp'] : []),
+      '-buffer_size', highResolutionSource ? '16777216' : '4194304',
+      '-reorder_queue_size', rtspTransport === 'udp' ? '4096' : '0',
+      '-rtbufsize', rtspTransport === 'udp' && highResolutionSource ? '64M' : '16M',
+      '-max_delay', rtspTransport === 'udp' ? '3000000' : '1000000',
       '-i', config.camera.rtspUrl,
       '-map', '0:v:0', '-an',
       '-vf', `scale=${width}:-2:in_range=tv:out_range=pc,fps=${fps}:round=zero,format=yuvj420p`,
       '-q:v', '7', '-threads', '2', '-fps_mode', 'cfr', '-flush_packets', '1',
-      '-f', 'mpjpeg', '-boundary_tag', this.boundary, 'pipe:1'
+      '-f', 'mpjpeg', '-boundary_tag', this.boundary, 'pipe:1',
+      // A separate child-process fd carries raw mono PCM while retaining the
+      // same RTSP input session. The optional map keeps video usable on cameras
+      // that expose no audio track.
+      ...(includeAudio ? [
+        '-map', '0:a:0?', '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+        '-fflags', 'nobuffer', '-flush_packets', '1', '-f', 's16le', 'pipe:3'
+      ] : [])
     ];
     this.jpegBuffer = Buffer.alloc(0);
-    this.ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    this.lastVideoAt = Date.now();
+    this.ffStartedAt = Date.now();
+    this.videoBytes = 0;
+    this.ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
     const pid = this.ff.pid;
-    console.log(`[MediaHub] ✅ single RTSP ingest pid=${pid}, video=${width}p@${fps}fps + audio=16kHz`);
+    console.log(`[MediaHub] ✅ single RTSP ingest pid=${pid}, video=${width}p@${fps}fps transport=${rtspTransport}${includeAudio ? ' + audio=16kHz' : ' (video-only fallback)'}`);
     this.ff.stdout.on('data', chunk => {
       this.videoBytes += chunk.length;
-      for (const client of this.videoClients) {
-        try { client.write(chunk); } catch (e) { this.videoClients.delete(client); }
-      }
+      this.lastVideoAt = Date.now();
       this.jpegBuffer = Buffer.concat([this.jpegBuffer, chunk]);
       while (true) {
         const soi = this.jpegBuffer.indexOf(Buffer.from([0xff, 0xd8]));
@@ -1840,6 +2758,23 @@ const MediaHub = {
         if (eoi < 0) { if (soi > 0) this.jpegBuffer = this.jpegBuffer.subarray(soi); break; }
         const jpeg = this.jpegBuffer.subarray(soi, eoi + 2);
         this.jpegBuffer = this.jpegBuffer.subarray(eoi + 2);
+        // Fan out complete JPEGs rather than arbitrary ffmpeg stdout chunks.
+        // When a browser is briefly slow, skip whole stale frames until its
+        // socket drains; it then resumes from the newest frame with no backlog.
+        const partHeader = Buffer.from(`--${this.boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`);
+        for (const client of this.videoClients) {
+          if (this.backpressuredVideoClients.has(client)) continue;
+          try {
+            let writable = true;
+            writable = client.write(partHeader) && writable;
+            writable = client.write(jpeg) && writable;
+            writable = client.write('\r\n') && writable;
+            if (!writable) {
+              this.backpressuredVideoClients.add(client);
+              client.once('drain', () => this.backpressuredVideoClients.delete(client));
+            }
+          } catch (e) { this.videoClients.delete(client); }
+        }
         if (jpeg.length > 5000 && Date.now() - this.lastSnapshotPublish > 3000) {
           this.lastSnapshotPublish = Date.now();
           try {
@@ -1850,28 +2785,99 @@ const MediaHub = {
         }
       }
     });
+    if (includeAudio) this.ff.stdio[3].on('data', chunk => {
+      this.audioBytes += chunk.length;
+      for (const subscriber of this.audioSubscribers) {
+        try { subscriber(chunk); } catch (e) { this.audioSubscribers.delete(subscriber); }
+      }
+    });
+    let ffmpegError = '';
     this.ff.stderr.on('data', d => {
       const s = d.toString().trim();
+      ffmpegError = `${ffmpegError}\n${s}`.slice(-4000);
+      const corruptSignals = s.match(/corrupt|missing reference|decode_slice_header|Invalid data found|missed \d+ packets/gi);
+      if (corruptSignals) {
+        this.corruptFrames += corruptSignals.length;
+        this.lastCorruptFrameAt = Date.now();
+        this.lastError = '检测到源流损坏帧，已自动丢弃并保持画面完整';
+      }
       if (s && this.videoBytes === 0) console.error('[MediaHub/ffmpeg]', s.slice(0, 1600));
     });
     this.ff.on('exit', (code, signal) => {
       if (this.ff?.pid !== pid) return;
       this.ff = null;
       console.warn(`[MediaHub] exited code=${code} signal=${signal}`);
+      if (includeAudio && /Error while opening decoder|AudioToolbox init error|Error opening output file pipe:3/i.test(ffmpegError)) {
+        this.audioUnavailable = true;
+        this.lastError = '摄像头 AAC 音轨无法解码，已自动保持视频并暂停摄像头语音';
+        if (typeof VoicePipeline !== 'undefined') VoicePipeline.onSharedAudioUnavailable(this.lastError);
+      }
       if (this.videoClients.size || this.audioSubscribers.size) {
         this.restartTimer = setTimeout(() => this.ensureStarted(), 1500);
+      } else if (!daemonRestartTimer) {
+        // Snapshot compatibility mode needs a continuously advancing local
+        // frame source after the live client disconnects. Hand ownership back
+        // only after this FFmpeg process has fully exited.
+        daemonRestartTimer = setTimeout(() => {
+          daemonRestartTimer = null;
+          startSnapshotDaemon();
+        }, 1500);
       }
     });
+    if (!this.watchdogTimer) {
+      this.watchdogTimer = setInterval(() => {
+        const hasConsumers = this.videoClients.size > 0 || this.audioSubscribers.size > 0;
+        // High-resolution RTSP relays may need several seconds to negotiate and
+        // deliver the first complete IDR. Once video has flowed, return to the
+        // short watchdog window so genuine stalls still recover quickly.
+        const startupGraceMs = 30000;
+        const stallLimitMs = this.videoBytes > 0 ? 6000 : startupGraceMs;
+        const stalled = this.ff && this.ff.exitCode === null && !this.ff.killed && Date.now() - this.lastVideoAt > stallLimitMs;
+        if (hasConsumers && stalled) {
+          if (this.videoBytes === 0 && this.currentTransport === 'udp') {
+            this.transportFallback = 'tcp';
+            this.lastError = 'UDP 未收到媒体数据，已自动切换 TCP';
+          }
+          this.restart(`no video data for ${Math.round((Date.now() - this.lastVideoAt) / 1000)}s`);
+        }
+      }, 2000);
+    }
   },
   addVideoClient(res) { this.videoClients.add(res); this.ensureStarted(); },
-  removeVideoClient(res) { this.videoClients.delete(res); },
-  subscribeAudio(fn) { this.audioSubscribers.add(fn); },
+  /** Ends FFmpeg cleanly so its RTSP demuxer can send TEARDOWN. */
+  stopProcess(reason) {
+    const processToStop = this.ff;
+    if (!processToStop || processToStop.exitCode !== null) return;
+    if (processToStop.killed) return;
+    console.log(`[MediaHub] stopping gracefully (${reason})`);
+    try { processToStop.kill('SIGTERM'); } catch { return; }
+    const forceTimer = setTimeout(() => {
+      if (processToStop.exitCode === null) {
+        try { processToStop.kill('SIGKILL'); } catch {}
+      }
+    }, 1500);
+    forceTimer.unref();
+  },
+  removeVideoClient(res) {
+    this.videoClients.delete(res);
+    if (!this.videoClients.size && !this.audioSubscribers.size && this.ff && this.ff.exitCode === null) {
+      this.stopProcess('last consumer disconnected');
+    }
+  },
+  subscribeAudio(fn) { this.audioSubscribers.add(fn); this.ensureStarted(); },
   unsubscribeAudio(fn) { this.audioSubscribers.delete(fn); },
-  status() { return { running: !!(this.ff && !this.ff.killed && this.ff.exitCode === null), pid: this.ff?.pid || null, videoClients: this.videoClients.size, audioSubscribers: this.audioSubscribers.size, videoBytes: this.videoBytes, audioBytes: this.audioBytes }; }
+  status() { const running = !!(this.ff && this.ff.exitCode === null), stopping = running && this.ff.killed, videoAgeMs = this.lastVideoAt ? Date.now() - this.lastVideoAt : null, highResolutionSource = streamProfile.width ? streamProfile.width >= 3000 : config.camera.forceSnapshotMode === true; return { running, stopping, healthy: running && !stopping && videoAgeMs !== null && (this.videoBytes > 0 ? videoAgeMs < 6000 : Date.now() - this.ffStartedAt < 30000), starting: running && !stopping && this.videoBytes === 0, pid: this.ff?.pid || null, videoClients: this.videoClients.size, audioSubscribers: this.audioSubscribers.size, videoBytes: this.videoBytes, videoAgeMs, audioBytes: this.audioBytes, previewFps: Math.max(2, Math.min(config.camera.streamFps || 10, 22)), previewWidth: Math.min(config.camera.streamWidth || 960, 960), sourceWidth: streamProfile.width, sourceHeight: streamProfile.height, sourceCodec: streamProfile.codec, rtspTransport: this.currentTransport || this.transportFallback || (highResolutionSource ? 'udp' : 'tcp'), corruptFrames: this.corruptFrames, lastCorruptFrameAt: this.lastCorruptFrameAt || null, audioUnavailable: this.audioUnavailable, lastError: this.lastError }; },
+  restart(reason) {
+    if (!this.ff || this.ff.exitCode !== null || this.ff.killed) return;
+    console.log(`[MediaHub] restarting (${reason})`);
+    this.stopProcess(reason);
+  }
 };
 
 const VoicePipeline = {
   ff: null,                  // ffmpeg child process
+  mediaAudioHandler: null,   // subscription callback for shared RTSP ingest
+  audioLeftover: Buffer.alloc(0),
   running: false,
   state: 'idle',             // idle | listening | recording | asr | parsing | executing
   audioSource: null,       // 'rtsp' | 'local' — initialized from config on first start
@@ -1888,7 +2894,15 @@ const VoicePipeline = {
   startedAt: 0,
   utterancesProcessed: 0,
   lastEvent: null,
+  lastError: null,
   wakeArmedUntil: 0,       // wake word spoken alone → accept the next utterance briefly
+  echoGuard: new VoiceEchoGuard(500),
+  adaptiveVad: null,
+  currentRms: 0,
+  peakRms: 0,
+  maxRmsSeen: 0,
+  audioFramesReceived: 0,
+  lastAudioFrameAt: 0,
 
   start(source, _isAutoRestart) {
     if (this.running) return false;
@@ -1901,12 +2915,29 @@ const VoicePipeline = {
     // Determine audio source
     if (source) this.audioSource = source;
     else if (!this.audioSource) this.audioSource = cfg.audioSource || 'rtsp';
+    if (this.audioSource === 'rtsp' && MediaHub.audioUnavailable) {
+      this.lastError = MediaHub.lastError || '摄像头音轨当前不可用';
+      this.broadcast({ type: 'error', message: this.lastError });
+      return false;
+    }
+    this.lastError = null;
 
     // VAD frame size: 100 ms @ 16kHz mono s16le = 1600 samples = 3200 bytes
     this.frameMs = 100;
     this.bytesPerFrame = 16 * 2 * this.frameMs; // 3200
     this.thrOn = cfg.vad?.energyThresholdOn ?? 0.018;
     this.thrOff = cfg.vad?.energyThresholdOff ?? 0.010;
+    this.adaptiveVad = new AdaptiveVadThreshold({
+      enabled: cfg.vad?.adaptive !== false,
+      fixedOn: this.thrOn,
+      fixedOff: this.thrOff,
+      initialNoiseFloor: cfg.vad?.initialNoiseFloor ?? Math.max(0.004, this.thrOff * 0.65)
+    });
+    this.currentRms = 0;
+    this.peakRms = 0;
+    this.maxRmsSeen = 0;
+    this.audioFramesReceived = 0;
+    this.lastAudioFrameAt = 0;
     this.minSpeechFrames = Math.ceil((cfg.vad?.minSpeechMs ?? 300) / this.frameMs);
     this.silenceTimeoutFrames = Math.ceil((cfg.vad?.silenceTimeoutMs ?? 1000) / this.frameMs);
     this.maxUtteranceFrames = Math.ceil((cfg.vad?.maxUtteranceMs ?? 8000) / this.frameMs);
@@ -1915,6 +2946,20 @@ const VoicePipeline = {
     this.partialEnabled = cfg.partialAsr !== false;
     this.lastPartialFrameMark = 0;
     this.partialInFlight = false;
+
+    // Preserve frame boundaries across arbitrary stream chunks, regardless of
+    // whether PCM comes from the shared RTSP hub or a local ffmpeg process.
+    this.audioLeftover = Buffer.alloc(0);
+    const consumePcm = chunk => {
+      const merged = this.audioLeftover.length ? Buffer.concat([this.audioLeftover, chunk]) : chunk;
+      let offset = 0;
+      while (merged.length - offset >= this.bytesPerFrame) {
+        const frame = merged.subarray(offset, offset + this.bytesPerFrame);
+        offset += this.bytesPerFrame;
+        this._onFrame(frame);
+      }
+      this.audioLeftover = merged.subarray(offset);
+    };
 
     let ffArgs;
     if (this.audioSource === 'local') {
@@ -1931,38 +2976,25 @@ const VoicePipeline = {
         '-flush_packets', '1',
         '-'
       ];
+      this.ff = spawn('ffmpeg', ffArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+      this.ff.stdout.on('data', consumePcm);
     } else {
-      ffArgs = [
-        '-hide_banner', '-loglevel', 'error',
-        '-rtsp_transport', 'tcp',
-        '-i', config.camera.rtspUrl,
-        '-vn', '-f', 's16le', '-acodec', 'pcm_s16le',
-        '-ar', '16000', '-ac', '1', '-fflags', 'nobuffer',
-        '-flush_packets', '1', '-'
-      ];
+      // Camera audio shares MediaHub's single RTSP connection with homepage
+      // video. Keeping the subscription alive across hub restarts prevents a
+      // transient camera disconnect from turning voice off.
+      this.ff = null;
+      this.mediaAudioHandler = consumePcm;
+      MediaHub.subscribeAudio(this.mediaAudioHandler);
     }
-
-    this.ff = spawn('ffmpeg', ffArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
 
     this.running = true;
     this.startedAt = Date.now();
     this.state = 'listening';
     this.broadcast({ type: 'state', state: 'listening', message: '语音监听已启动', audioSource: this.audioSource });
-    console.log(`[Voice] Pipeline started (pid=${this.ff.pid}, source=${this.audioSource}). Wake words: ${cfg.wakeWords.join(', ')}`);
+    const pipelineId = this.ff?.pid || `media-hub:${MediaHub.ff?.pid || 'starting'}`;
+    console.log(`[Voice] Pipeline started (source=${this.audioSource}, input=${pipelineId}). Wake words: ${cfg.wakeWords.join(', ')}`);
 
-    let leftover = Buffer.alloc(0);
-    this.ff.stdout.on('data', chunk => {
-      const merged = leftover.length ? Buffer.concat([leftover, chunk]) : chunk;
-      let offset = 0;
-      while (merged.length - offset >= this.bytesPerFrame) {
-        const frame = merged.subarray(offset, offset + this.bytesPerFrame);
-        offset += this.bytesPerFrame;
-        this._onFrame(frame);
-      }
-      leftover = merged.subarray(offset);
-    });
-
-    this.ff.stderr.on('data', d => {
+    if (this.ff) this.ff.stderr.on('data', d => {
       const s = d.toString();
       // Log more broadly for local source debugging
       if (this.audioSource === 'local') {
@@ -1975,8 +3007,8 @@ const VoicePipeline = {
       }
     });
 
-    const currentPid = this.ff.pid;
-    this.ff.on('exit', code => {
+    const currentPid = this.ff?.pid;
+    if (this.ff) this.ff.on('exit', code => {
       // Guard: only handle exit of CURRENT ffmpeg — ignore stale exit from previous instance
       if (this.ff && this.ff.pid !== currentPid) return;
       if (this.videoWatchTimer) { clearInterval(this.videoWatchTimer); this.videoWatchTimer = null; }
@@ -2012,6 +3044,11 @@ const VoicePipeline = {
     this.speaking = false;
     this.buffer = [];
     this.preRoll = [];
+    this.audioLeftover = Buffer.alloc(0);
+    if (this.mediaAudioHandler) {
+      MediaHub.unsubscribeAudio(this.mediaAudioHandler);
+      this.mediaAudioHandler = null;
+    }
     if (this.videoWatchTimer) { clearInterval(this.videoWatchTimer); this.videoWatchTimer = null; }
     if (this.ff) {
       try { this.ff.kill('SIGKILL'); } catch (e) {}
@@ -2024,7 +3061,35 @@ const VoicePipeline = {
     return true;
   },
 
+  /** Stop only the shared camera-audio consumer while leaving video alive. */
+  onSharedAudioUnavailable(message) {
+    if (!this.running || this.audioSource !== 'rtsp') return;
+    this.running = false;
+    this.lastError = message;
+    this.state = 'idle';
+    this.speaking = false;
+    this.buffer = [];
+    this.preRoll = [];
+    if (this.mediaAudioHandler) {
+      MediaHub.unsubscribeAudio(this.mediaAudioHandler);
+      this.mediaAudioHandler = null;
+    }
+    this.broadcast({ type: 'error', message });
+    this.broadcast({ type: 'state', state: 'idle', message });
+    console.error(`[Voice] ${message}`);
+  },
+
   _onFrame(frame) {
+    // Do not feed HomeSense's own local reply back into VAD/ASR. Clear partial
+    // utterances as soon as playback starts, then retain a short acoustic tail.
+    if (this.echoGuard.shouldSuppress()) {
+      this.speaking = false;
+      this.speechFrames = 0;
+      this.silenceFrames = 0;
+      this.buffer = [];
+      this.preRoll = [];
+      return;
+    }
     // Compute RMS energy in [0, 1]
     let sumSq = 0;
     const samples = frame.length / 2;
@@ -2033,13 +3098,19 @@ const VoicePipeline = {
       sumSq += s * s;
     }
     const rms = Math.sqrt(sumSq / samples);
+    this.currentRms = rms;
+    this.peakRms = Math.max(rms, this.peakRms * 0.96);
+    this.maxRmsSeen = Math.max(this.maxRmsSeen, rms);
+    this.audioFramesReceived += 1;
+    this.lastAudioFrameAt = Date.now();
+    const adaptiveThreshold = this.adaptiveVad?.observe(rms, this.speaking) || { on: this.thrOn, off: this.thrOff, noiseFloor: 0 };
 
     // Maintain pre-roll for capturing leading speech
     this.preRoll.push(frame);
     if (this.preRoll.length > this.preRollMaxFrames) this.preRoll.shift();
 
     if (!this.speaking) {
-      if (rms >= this.thrOn) {
+      if (rms >= adaptiveThreshold.on) {
         this.speechFrames++;
         if (this.speechFrames >= this.minSpeechFrames) {
           // Speech start confirmed
@@ -2057,7 +3128,7 @@ const VoicePipeline = {
       }
     } else {
       this.buffer.push(frame);
-      if (rms < this.thrOff) {
+      if (rms < adaptiveThreshold.off) {
         this.silenceFrames++;
         if (this.silenceFrames >= this.silenceTimeoutFrames) {
           this._endUtterance('silence');
@@ -2085,8 +3156,10 @@ const VoicePipeline = {
     const wav = pcmToWav(pcm);
     asrTranscribe(wav, 'partial').then(text => {
       this.partialInFlight = false;
-      // Only broadcast if still recording (utterance not yet ended)
-      if (text && this.speaking) {
+      // Partial ASR is a remote request and often returns just after a short
+      // utterance has ended. Keep it visible while final ASR is running instead
+      // of silently dropping the only subtitle the user could have seen.
+      if (text && (this.speaking || this.state === 'asr')) {
         this.broadcast({ type: 'partial', text });
       }
     }).catch(err => {
@@ -2141,9 +3214,14 @@ const VoicePipeline = {
     // 3. Wake word check
     const cfg = config.voiceControl;
     let wakeMatch = matchWakeWord(text, cfg.wakeWords || []);
+    const explicitlyWoken = wakeMatch.matched;
     if (!wakeMatch.matched && Date.now() < this.wakeArmedUntil) {
       wakeMatch = { matched: true, wakeWord: (cfg.wakeWords || [])[0] || '管家', remainder: text, followUp: true };
       console.log(`[Voice] Follow-up accepted inside wake window: "${text}"`);
+    }
+    if (!wakeMatch.matched && VoiceConversation.isActive()) {
+      wakeMatch = { matched: true, wakeWord: VoiceConversation.wakeWord || (cfg.wakeWords || [])[0] || '管家', remainder: text, conversationFollowUp: true };
+      console.log(`[Voice] Follow-up accepted inside continuous conversation: "${text}"`);
     }
     if (!wakeMatch.matched) {
       this.broadcast({ type: 'ignored', text, reason: 'no_wake_word' });
@@ -2152,44 +3230,93 @@ const VoicePipeline = {
       return;
     }
 
-    const command = wakeMatch.remainder.trim();
+    const spokenCommand = wakeMatch.remainder.trim();
     this.wakeArmedUntil = 0;
-    this.broadcast({ type: 'wake', wakeWord: wakeMatch.wakeWord, text, command });
-    console.log(`[Voice] Wake matched: "${wakeMatch.wakeWord}", command: "${command}"`);
+    if (explicitlyWoken) VoiceConversation.start(wakeMatch.wakeWord);
+    else VoiceConversation.touch();
+    this.broadcast({ type: 'wake', wakeWord: wakeMatch.wakeWord, text, command: spokenCommand, continuous: VoiceConversation.isActive() });
+    console.log(`[Voice] Wake matched: "${wakeMatch.wakeWord}", command: "${spokenCommand}", continuous=${VoiceConversation.isActive()}`);
 
-    if (!command) {
-      // Wake word alone — acknowledge and accept the next utterance without another wake word.
-      this.wakeArmedUntil = Date.now() + 8000;
-      const ack = '我在，请讲。';
+    if (!spokenCommand) {
+      // Wake word alone starts a continuous session. The legacy short wake
+      // window remains as a fallback when continuous conversation is disabled.
+      if (!VoiceConversation.isActive()) this.wakeArmedUntil = Date.now() + 8000;
+      const ack = VoiceConversation.isActive() ? '我在，我们可以连续聊。' : '我在，请讲。';
       this.broadcast({ type: 'reply', text: ack, success: true });
-      speakReply(ack, 'qaCommand');
+      speakReply(ack, 'qaCommand', { origin: 'voice' });
       this.broadcast({ type: 'state', state: 'listening', message: '请说出指令...' });
       this.state = 'listening';
       return;
     }
 
+    if (VoiceConversation.isActive() && VoiceConversation.shouldExit(spokenCommand)) {
+      VoiceConversation.end('user_exit');
+      const reply = '好的，对话已结束。';
+      this.broadcast({ type: 'conversation_end', reason: 'user_exit', reply });
+      this.broadcast({ type: 'reply', text: reply, success: true });
+      speakReply(reply, 'qaCommand', { origin: 'voice' });
+      this.state = 'listening';
+      this.broadcast({ type: 'state', state: 'listening', message: '等待唤醒...' });
+      return;
+    }
+
+    // Only factual household questions inherit terse room/time references.
+    // Device actions below continue to use the current utterance verbatim.
+    const expandedQuestion = expandHouseholdFollowUp(
+      spokenCommand,
+      VoiceConversation.lastUserText(),
+      (config.rooms || []).map(room => room.name)
+    );
+
+    // Household questions are read-only and deterministic. Resolve them before
+    // the command model so “今天下午客厅有人吗” can never become a device action.
+    const localQuestion = await answerLocalHomeQuestion(expandedQuestion);
+    if (localQuestion) {
+      VoiceConversation.addExchange(spokenCommand, localQuestion.reply, { source: localQuestion.source });
+      this.broadcast({ type: 'qa', text, command: spokenCommand, expandedQuestion, reply: localQuestion.reply, source: localQuestion.source });
+      this.broadcast({ type: 'reply', text: localQuestion.reply, success: !!localQuestion.ok });
+      speakReply(localQuestion.reply, 'qaCommand', { origin: 'voice' });
+      AutomationEngine.recordActivity({ name: '家庭历史问答', source: 'voice', command: spokenCommand, reply: localQuestion.reply, success: !!localQuestion.ok });
+      this.state = 'listening';
+      this.broadcast({ type: 'state', state: 'listening', message: '继续监听...' });
+      return;
+    }
+
+    const visualQuestion = await answerVisualQuestion(spokenCommand);
+    if (visualQuestion) {
+      VoiceConversation.addExchange(spokenCommand, visualQuestion.reply, { source: visualQuestion.source });
+      this.broadcast({ type: 'qa', text, command: spokenCommand, reply: visualQuestion.reply, source: visualQuestion.source, capturedAt: visualQuestion.capturedAt });
+      this.broadcast({ type: 'reply', text: visualQuestion.reply, success: !!visualQuestion.ok });
+      speakReply(visualQuestion.reply, 'qaCommand', { origin: 'voice' });
+      AutomationEngine.recordActivity({ name: '视觉问答', source: 'voice', command: spokenCommand, reply: visualQuestion.reply, success: !!visualQuestion.ok });
+      this.state = 'listening';
+      this.broadcast({ type: 'state', state: 'listening', message: '继续监听...' });
+      return;
+    }
+
     // 3b. Smart-home semantic gate. If command doesn't look home-related,
     // delegate to QA fallback (general assistant via LLM) when enabled, otherwise ignore.
-    if (cfg.semanticGate !== false && !looksLikeCommand(command)) {
+    if (cfg.semanticGate !== false && !looksLikeCommand(spokenCommand)) {
       const qaEnabled = config.voice?.qa?.enabled !== false;
       if (qaEnabled) {
-        console.log(`[Voice] Wake matched, non-home command → QA fallback: "${command}"`);
+        console.log(`[Voice] Wake matched, non-home command → QA fallback: "${spokenCommand}"`);
         this.state = 'parsing';
-        this.broadcast({ type: 'state', state: 'parsing', message: `问答模式: ${command}` });
-        const qa = await answerLocalHomeQuestion(command) || await chitchatLLM(command);
+        this.broadcast({ type: 'state', state: 'parsing', message: `问答模式: ${spokenCommand}` });
+        const qa = await answerLocalHomeQuestion(expandedQuestion) || await chitchatLLM(spokenCommand, VoiceConversation.messages());
         const reply = qa.reply || '抱歉，这个问题我暂时帮不了。';
-        this.broadcast({ type: 'qa', text, command, reply, source: qa.source });
+        VoiceConversation.addExchange(spokenCommand, reply, { source: qa.source });
+        this.broadcast({ type: 'qa', text, command: spokenCommand, reply, source: qa.source });
         this.broadcast({ type: 'reply', text: reply, success: !!qa.ok });
-        speakReply(reply, 'qaCommand');
+        speakReply(reply, 'qaCommand', { origin: 'voice' });
         this.state = 'listening';
         this.broadcast({ type: 'state', state: 'listening', message: '继续监听...' });
         return;
       }
-      console.log(`[Voice] Wake matched but command unrelated to smart home, ignored: "${command}"`);
-      this.broadcast({ type: 'ignored', text, reason: 'not_smart_home', command });
+      console.log(`[Voice] Wake matched but command unrelated to smart home, ignored: "${spokenCommand}"`);
+      this.broadcast({ type: 'ignored', text, reason: 'not_smart_home', command: spokenCommand });
       const msg = '这条指令好像跟智能家居无关，已忽略。';
       this.broadcast({ type: 'reply', text: msg, success: false });
-      if (this.audioSource === 'local') ttsSpeak(msg);
+      speakReply(msg, 'qaCommand', { origin: 'voice' });
       this.state = 'listening';
       this.broadcast({ type: 'state', state: 'listening', message: '继续监听...' });
       return;
@@ -2197,38 +3324,31 @@ const VoicePipeline = {
 
     // 4. NL parse + execute via existing pipeline
     // Broadcast intent shortcut — speak literal text via Xiaoai, bypass parser/QA.
-    const broadcast = tryBroadcastIntent(command);
+    const broadcast = tryBroadcastIntent(spokenCommand);
     if (broadcast.matched) {
-      console.log(`[Broadcast] (voice) "${command}" → speak "${broadcast.text}" (${broadcast.reason})`);
+      console.log(`[Broadcast] (voice) "${spokenCommand}" → speak "${broadcast.text}" (${broadcast.reason})`);
+      VoiceConversation.addExchange(spokenCommand, broadcast.text, { source: 'broadcast' });
       this.broadcast({ type: 'parse', parse: { understood: true, broadcast: true, reply: broadcast.text } });
-      speakReply(broadcast.text, 'broadcast');
+      speakReply(broadcast.text, 'broadcast', { origin: 'broadcast' });
       this.state = 'listening';
       this.broadcast({ type: 'state', state: 'listening', message: '已代播，继续监听...' });
       return;
     }
 
     this.state = 'parsing';
-    this.broadcast({ type: 'state', state: 'parsing', message: `解析: ${command}` });
-    const parseResult = await processNLCommand(command);
+    this.broadcast({ type: 'state', state: 'parsing', message: `解析: ${spokenCommand}` });
+    const parseResult = await processNLCommand(spokenCommand);
     this.broadcast({ type: 'parse', parse: parseResult });
 
     if (!parseResult.understood || !parseResult.actions?.length) {
-      // Home parser failed → try QA fallback (e.g. user said something home-shaped but no matching device)
-      const qaEnabled = config.voice?.qa?.enabled !== false;
-      if (qaEnabled) {
-        console.log(`[Voice] Home NL failed → QA fallback: "${command}"`);
-        const qa = await answerLocalHomeQuestion(command) || await chitchatLLM(command);
-        const reply = qa.reply || parseResult.reply || '没听懂这个指令';
-        this.broadcast({ type: 'qa', text, command, reply, source: qa.source });
-        this.broadcast({ type: 'reply', text: reply, success: !!qa.ok });
-        speakReply(reply, 'qaCommand');
-        this.state = 'listening';
-        this.broadcast({ type: 'state', state: 'listening', message: '继续监听...' });
-        return;
-      }
-      const msg = parseResult.reply || '没听懂这个指令';
+      // This branch is already known to be home-command shaped. Never ask the
+      // chat model to improvise a reply here: it could say “已关闭” despite no
+      // service dispatch. A failed parser must produce an explicit non-action.
+      console.log(`[Voice] Home NL failed safely; no device action: "${spokenCommand}"`);
+      const msg = parseResult.reply || '没有找到可执行的设备，操作未执行';
+      VoiceConversation.addExchange(spokenCommand, msg, { source: 'command_not_executed' });
       this.broadcast({ type: 'reply', text: msg, success: false });
-      if (this.audioSource === 'local') ttsSpeak(msg);
+      speakReply(msg, 'qaCommand', { origin: 'voice' });
       this.state = 'listening';
       this.broadcast({ type: 'state', state: 'listening', message: '继续监听...' });
       return;
@@ -2264,17 +3384,27 @@ const VoicePipeline = {
     } else if (okCount === 0 && skippedCount === 0) {
       finalReply = `找到设备但执行失败，请检查设备状态`;
     } else if (okCount === 0 && skippedCount > 0) {
-      finalReply = (await naturalizeReply(executed, command)) || '所有设备已是该状态，无需更改';
+      finalReply = (await naturalizeReply(executed, spokenCommand)) || '所有设备已是该状态，无需更改';
     } else {
-      finalReply = (await naturalizeReply(executed, command)) || parseResult.reply || '已执行';
+      finalReply = (await naturalizeReply(executed, spokenCommand)) || parseResult.reply || '已执行';
     }
 
     this.broadcast({ type: 'executed', executed, reply: finalReply });
     console.log(`[Voice] Matched ${totalMatches}, ok=${okCount} skipped=${skippedCount} — reply="${finalReply}"`);
+    AutomationEngine.recordActivity({
+      name: '语音控制',
+      source: 'voice',
+      command: spokenCommand,
+      context: `唤醒词：${wakeMatch.wakeWord}`,
+      executed,
+      reply: finalReply,
+      success: totalMatches > 0 && (okCount > 0 || skippedCount > 0)
+    });
 
     // Speak reply: broadcast through Xiaoai speaker (preferred) and/or local `say`
     if (finalReply) {
-      speakReply(finalReply, 'nlCommand');
+      VoiceConversation.addExchange(spokenCommand, finalReply, { source: 'device_control' });
+      speakReply(finalReply, 'nlCommand', { origin: 'voice' });
     }
 
     this.state = 'listening';
@@ -2291,6 +3421,11 @@ const VoicePipeline = {
   },
 
   status() {
+    const vadThreshold = this.adaptiveVad?.thresholds() || { on: this.thrOn || 0, off: this.thrOff || 0, noiseFloor: 0 };
+    const audioAgeMs = this.lastAudioFrameAt ? Date.now() - this.lastAudioFrameAt : null;
+    const inputHealth = !this.running ? 'stopped'
+      : audioAgeMs === null || audioAgeMs > 2000 ? 'no_audio'
+        : Date.now() - this.startedAt > 60000 && this.utterancesProcessed === 0 && this.maxRmsSeen < vadThreshold.on ? 'low_signal' : 'healthy';
     return {
       running: this.running,
       state: this.state,
@@ -2298,7 +3433,21 @@ const VoicePipeline = {
       startedAt: this.startedAt,
       utterancesProcessed: this.utterancesProcessed,
       wakeWords: config.voiceControl?.wakeWords || [],
-      enabled: config.voiceControl?.enabled === true
+      enabled: config.voiceControl?.enabled === true,
+      outputRoute: config.voiceControl?.output?.mode || 'follow',
+      localOutputActive: this.echoGuard.activeCount > 0,
+      echoGuardRemainingMs: this.echoGuard.remaining(),
+      inputHealth,
+      audioAgeMs,
+      audioFramesReceived: this.audioFramesReceived,
+      currentRms: Number(this.currentRms.toFixed(5)),
+      peakRms: Number(this.peakRms.toFixed(5)),
+      maxRmsSeen: Number(this.maxRmsSeen.toFixed(5)),
+      noiseFloor: Number(vadThreshold.noiseFloor.toFixed(5)),
+      effectiveThresholdOn: Number(vadThreshold.on.toFixed(5)),
+      effectiveThresholdOff: Number(vadThreshold.off.toFixed(5)),
+      conversation: VoiceConversation.status(),
+      error: this.lastError
     };
   },
 
@@ -2311,33 +3460,47 @@ const VoicePipeline = {
     this.audioSource = newSource;
     // Persist to config
     config.voiceControl.audioSource = newSource;
-    try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2)); } catch (e) {}
+    try { writeJsonAtomic(CONFIG_PATH, config); } catch (e) {}
     if (wasRunning) this.start(newSource);
     return { ok: true, audioSource: this.audioSource, running: this.running };
   }
 };
 
 // ============ TTS (Text-to-Speech for local mode) ============
-// Uses macOS `say` command with Chinese voice. Only active when audioSource === 'local'.
+// Uses macOS `say` with a lifecycle guard so playback is never transcribed as input.
 function ttsSpeak(text) {
-  if (!text) return;
+  if (!text) return null;
   const cfg = config.voiceControl?.tts || {};
-  if (cfg.enabled === false) return;
+  if (cfg.enabled === false) return null;
   const voice = cfg.voice || 'Tingting';
   const rate = cfg.rate || 200; // words per minute
   // Sanitize text for shell (remove quotes and newlines)
   const safe = text.replace(/["'`\n\r\\$]/g, ' ').slice(0, 200);
+  VoicePipeline.echoGuard.begin();
   const child = spawn('say', ['-v', voice, '-r', String(rate), safe], { stdio: 'ignore' });
-  child.on('error', e => console.error('[TTS] say error:', e.message));
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    VoicePipeline.echoGuard.end(Date.now(), config.voiceControl?.output?.echoGuardMs ?? 500);
+  };
+  child.on('error', e => { console.error('[TTS] say error:', e.message); finish(); });
+  child.on('exit', finish);
   console.log(`[TTS] Speaking: "${safe.slice(0, 40)}..."`);
+  return child;
 }
 
 // ============ Xiaoai Speaker (broadcast via Mi Home notify entity) ============
 // Routes a short text reply to a Xiaomi smart speaker / display via HA notify.send_message.
-async function notifyXiaoai(text, speakerEntityId) {
+/**
+ * Sends text to a configured Xiaoai notify entity.
+ * Manual diagnostics may bypass the automation master switch so a founder can
+ * verify the selected speaker before saving or enabling automatic broadcasts.
+ */
+async function notifyXiaoai(text, speakerEntityId, options = {}) {
   if (!text) return { ok: false, reason: 'empty' };
   const cfg = config.xiaoai || {};
-  if (cfg.enabled === false) return { ok: false, reason: 'disabled' };
+  if (cfg.enabled === false && !options.ignoreEnabled) return { ok: false, reason: 'disabled' };
   const target = speakerEntityId || cfg.defaultSpeaker;
   if (!target) return { ok: false, reason: 'no_target' };
   const maxLen = cfg.maxLength || 200;
@@ -2394,19 +3557,26 @@ function tryBroadcastIntent(command) {
   return { matched: false };
 }
 
-// Unified reply broadcaster: routes text reply to xiaoai speaker (per-event toggle) +
-// optional local `say` fallback when voice pipeline runs on local mic.
-function speakReply(text, eventType) {
-  if (!text) return;
+// Unified single-destination reply router. Explicit broadcast requests still
+// target Xiaoai; ordinary browser text input remains text-only in follow mode.
+function speakReply(text, eventType, options = {}) {
+  if (!text) return 'silent';
   const xiaoai = config.xiaoai || {};
   const eventEnabled = eventType ? xiaoai.triggerOn?.[eventType] !== false : true;
-  if (xiaoai.enabled !== false && eventEnabled) {
+  const route = resolveVoiceOutput({
+    mode: config.voiceControl?.output?.mode || 'follow',
+    origin: options.origin || 'web',
+    audioSource: VoicePipeline?.audioSource || config.voiceControl?.audioSource || 'rtsp',
+    eventEnabled,
+    xiaoaiEnabled: xiaoai.enabled !== false,
+    localEnabled: config.voiceControl?.tts?.enabled !== false
+  });
+  if (route === 'xiaoai') {
     notifyXiaoai(text).catch(() => {});
-  }
-  // Preserve original behavior: when user is at the Mac (local mic), play through laptop
-  if (VoicePipeline?.audioSource === 'local') {
+  } else if (route === 'local') {
     ttsSpeak(text);
   }
+  return route;
 }
 
 // PCM (s16le) → WAV (RIFF) Buffer
@@ -2501,9 +3671,14 @@ function asrTranscribe(wavBuffer, kind) {
 // Wake word matcher with multi-alias support and lenient prefix
 function matchWakeWord(text, wakeWords) {
   if (!text || !wakeWords?.length) return { matched: false };
-  const normalized = text.replace(/\s+/g, '').replace(/[，。、,.!?！？]/g, '');
+  const normalizeWakeText = value => value
+    .toLowerCase()
+    .replace(/诺娃|诺瓦/g, 'nova')
+    .replace(/\s+/g, '')
+    .replace(/[，。、,.!?！？]/g, '');
+  const normalized = normalizeWakeText(text);
   for (const w of wakeWords) {
-    const wn = w.replace(/\s+/g, '');
+    const wn = normalizeWakeText(w);
     // Prefix or near-prefix (allow 1 char before)
     const idx = normalized.indexOf(wn);
     if (idx >= 0 && idx <= 2) {
@@ -2545,12 +3720,11 @@ function looksLikeCommand(text) {
 function startPeriodicTasks() {
   const audioEnabled = config.audio?.enabled !== false;
   const captureFreq = (config.camera.captureIntervalSec || 60) * 1000;
-  const snapshotRefreshSec = config.camera.snapshotRefreshSec || 15;
 
   const cameraVoiceOwnsRtsp = config.voiceControl?.enabled && (config.voiceControl.audioSource || 'rtsp') === 'rtsp';
 
   // Detect stream codec/resolution → adaptive mode/fps/width
-  if (!cameraVoiceOwnsRtsp && !MediaHub.status().running) {
+  if (!MediaHub.status().running) {
     detectStreamProfile()
       .then(profile => {
         if (profile.recommendedMode === 'snapshot' && !MediaHub.status().running) startSnapshotDaemon();
@@ -2558,7 +3732,7 @@ function startPeriodicTasks() {
       .catch(() => {});
   }
   // Re-probe every 10 minutes to catch quality / codec changes
-  setInterval(() => { if (!cameraVoiceOwnsRtsp && !MediaHub.status().running) detectStreamProfile().catch(() => {}); }, 600000);
+  setInterval(() => { if (!MediaHub.status().running) detectStreamProfile().catch(() => {}); }, 600000);
 
   // Environment snapshot sampling: every 30s for sparkline history
   sampleEnvHistory().catch(() => {});
@@ -2573,31 +3747,57 @@ function startPeriodicTasks() {
     setTimeout(snapshotLoop, 500);
   };
   snapshotLoop();
+
+  // Event-driven visual perception. A tiny 16×16 grayscale fingerprint is
+  // computed locally for each new candidate snapshot. Material changes trigger
+  // fast analysis; static scenes use the configured heartbeat interval.
+  let lastCandidateMtime = 0;
+  let previousFingerprint = null;
+  let lastAnalyzedFingerprint = null;
+  let lastTriggeredAt = 0;
+  let perceptionCheckRunning = false;
+  const motionThreshold = 0.035;
+  setInterval(async () => {
+    if (perceptionCheckRunning || !fs.existsSync(SNAPSHOT_PATH)) return;
+    let stat;
+    try { stat = fs.statSync(SNAPSHOT_PATH); } catch { return; }
+    if (stat.mtimeMs <= lastCandidateMtime || stat.size < 5000) return;
+    lastCandidateMtime = stat.mtimeMs;
+    perceptionCheckRunning = true;
+    try {
+      const fingerprint = await readVisualFingerprint();
+      const frameDelta = visualDifference(previousFingerprint, fingerprint);
+      const analyzedDelta = visualDifference(lastAnalyzedFingerprint, fingerprint);
+      previousFingerprint = fingerprint;
+      const now = Date.now();
+      const heartbeatMs = Math.max(10, config.ai?.analysisIntervalSec || 60) * 1000;
+      const firstAnalysis = !lastAnalysis.timestamp;
+      const materialChange = frameDelta >= motionThreshold && analyzedDelta >= motionThreshold;
+      const heartbeatDue = now - lastAnalysis.timestamp >= heartbeatMs;
+      const changeDebounced = now - lastTriggeredAt >= 8000;
+      broadcastVision({ type: 'observing', frameDelta: +frameDelta.toFixed(4), materialChange });
+      if (firstAnalysis || heartbeatDue || (materialChange && changeDebounced)) {
+        const reason = firstAnalysis ? 'first-frame' : (materialChange ? 'scene-change' : 'heartbeat');
+        lastTriggeredAt = now;
+        lastAnalyzedFingerprint = Buffer.from(fingerprint);
+        analyzeSnapshot(reason).catch(error => console.error('[Vision] analysis error:', error.message));
+      }
+    } catch (error) {
+      console.warn('[Vision] perception check failed:', error.message);
+    } finally {
+      perceptionCheckRunning = false;
+    }
+  }, 1000);
   
   // Full capture cycle (video + audio): for AI analysis and transcription
   setInterval(async () => {
     const result = await captureAll();
-    
-    // Trigger vision analysis if new snapshot
-    if (result.video && lastSnapshotTime > lastAnalysis.timestamp) {
-      setTimeout(() => analyzeSnapshot().catch(e => console.error('[AI] Error:', e.message)), 1000);
-    }
     
     // Trigger audio transcription if new audio
     if (result.audio && audioEnabled) {
       setTimeout(() => transcribeAudio().catch(e => console.error('[Audio] Transcribe error:', e.message)), 2000);
     }
 
-    // FALLBACK: if captureAll was skipped (live stream / voice on RTSP holding the camera),
-    // refreshSnapshot is still updating SNAPSHOT_PATH every snapshotRefreshSec.
-    // Use that latest in-memory snapshot to keep AI analysis + rule evaluation running.
-    if (result.skipped && fs.existsSync(SNAPSHOT_PATH)) {
-      const snapAge = Date.now() - (lastSnapshotTime || 0);
-      if (lastSnapshotTime > lastAnalysis.timestamp && snapAge < captureFreq * 2) {
-        console.log(`[AI] captureAll skipped — running analysis on latest snapshot (age ${Math.round(snapAge/1000)}s)`);
-        setTimeout(() => analyzeSnapshot().catch(e => console.error('[AI] Error:', e.message)), 500);
-      }
-    }
   }, captureFreq);
 
   // No initial captureAll — snapshot refresh handles first frame.
@@ -2620,18 +3820,197 @@ const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
 
-  // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  // Never reflect arbitrary web origins into HomeSense's privileged household API.
+  const allowedOrigin = corsOrigin(req, SECURITY);
+  if (allowedOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   
   if (req.method === 'OPTIONS') {
+    if (req.headers.origin && !allowedOrigin) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: '不允许的请求来源' }));
+    }
     res.writeHead(204);
     return res.end();
   }
 
+  // A LAN-bound HomeSense protects the UI, camera media and APIs together. Basic
+  // auth gives browsers a native credential flow; Bearer remains available to
+  // integrations. Localhost keeps the existing zero-configuration experience.
+  if (!authenticateRequest(req, SECURITY)) {
+    res.writeHead(401, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      'WWW-Authenticate': 'Basic realm="HomeSense", charset="UTF-8"'
+    });
+    return res.end(JSON.stringify({ error: '需要知家 访问令牌' }));
+  }
+
   try {
     // === API Routes ===
+
+    // Unified household state. Read APIs are intentionally separate from HA's
+    // raw entity proxy: consumers can depend on this stable semantic contract
+    // while adapters and device vendors change underneath it.
+    if (pathname === '/api/home/state' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify(HomeState.snapshot()));
+    }
+
+    if (pathname === '/api/spatial/intelligence' && req.method === 'GET') {
+      const household = HomeState.snapshot();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify({
+        realtime: HaRealtime?.snapshot() || { connected: false, authenticated: false },
+        registry: SpatialRegistry.snapshot(),
+        ...SpatialEngine.snapshot(household)
+      }));
+    }
+
+    if (pathname === '/api/decision-quality' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify(DecisionQuality.summary()));
+    }
+
+    if (pathname === '/api/quality/baseline' && req.method === 'GET') {
+      const days = Math.max(1, Math.min(Number(parsedUrl.query.days) || 7, 30));
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify({
+        generatedAt: Date.now(),
+        window: RuntimeStore.qualityWindow(days),
+        decision: DecisionQuality.summary().metrics,
+        targets: { criticalMisfires: 0, perceptionToStateP95Ms: 500, stateToActionP95Ms: 2000, verificationRate: 99, correctionRateMax: 5 }
+      }));
+    }
+
+    if (pathname === '/api/spatial/registry' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify(SpatialRegistry.snapshot()));
+    }
+
+    if (pathname === '/api/spatial/registry/bind' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; if (body.length > 256 * 1024) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const input = JSON.parse(body || '{}');
+          if (!input.entityId || !input.spaceId) throw new Error('请选择设备与空间');
+          const binding = SpatialRegistry.bind(String(input.entityId), String(input.spaceId));
+          config.spaceRegistry = config.spaceRegistry || { bindings: {} };
+          config.spaceRegistry.bindings = { ...SpatialRegistry.bindings };
+          writeJsonAtomic(CONFIG_PATH, config);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, binding, registry: SpatialRegistry.snapshot() }));
+        } catch (error) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: error.message }));
+        }
+      });
+      return;
+    }
+
+    if (pathname === '/api/spatial/registry/environment' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; if (body.length > 64 * 1024) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const input = JSON.parse(body || '{}');
+          if (!input.spaceId || !input.metric || !input.entityId) throw new Error('请选择空间、指标和传感器');
+          const binding = SpatialRegistry.bindEnvironmentSource(String(input.spaceId), String(input.metric), String(input.entityId));
+          config.spaceRegistry.environmentSources = JSON.parse(JSON.stringify(SpatialRegistry.environmentSources));
+          writeJsonAtomic(CONFIG_PATH, config);
+          HomeState.refreshEnvironmentSelections();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, binding, registry: SpatialRegistry.snapshot() }));
+        } catch (error) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: error.message }));
+        }
+      });
+      return;
+    }
+
+    if (pathname === '/api/home/events' && req.method === 'GET') {
+      const limit = Number(parsedUrl.query.limit) || 100;
+      const type = typeof parsedUrl.query.type === 'string' ? parsedUrl.query.type : undefined;
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify({ events: HomeState.recentEvents({ limit, type }) }));
+    }
+
+    if (pathname === '/api/automation/timeline' && req.method === 'GET') {
+      const limit = Number(parsedUrl.query.limit) || 100;
+      const timeline = buildAutomationTimeline({
+        events: HomeState.recentEvents({ limit: 500 }),
+        activities: AutomationEngine.history,
+        limit
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify({ timeline }));
+    }
+
+    if (pathname === '/api/home/state/refresh' && req.method === 'POST') {
+      const states = await haRequest('GET', '/api/states');
+      const events = HomeState.ingestHaStates(states, Date.now());
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true, eventCount: events.length, state: HomeState.snapshot() }));
+    }
+
+    // Local face identity management. Enrollment is explicit and only the
+    // derived Vision feature print is retained; uploaded image bytes are not.
+    if (pathname === '/api/faces' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ people: FaceIdentity.people, localOnly: true, originalsRetained: false }));
+    }
+    if (pathname === '/api/faces/enroll' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 12 * 1024 * 1024) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const input = JSON.parse(body || '{}');
+          const match = String(input.image || '').match(/^data:image\/(?:jpeg|jpg|png);base64,(.+)$/i);
+          if (!match) throw new Error('请选择 JPG 或 PNG 人脸照片');
+          const person = FaceIdentity.enroll(input.name, Buffer.from(match[1], 'base64'));
+          res.writeHead(201, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, person, originalsRetained: false }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: e.stderr?.toString().match(/"error":"([^"]+)/)?.[1] || e.message }));
+        }
+      });
+      return;
+    }
+    if (pathname === '/api/faces/enroll-camera' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => body += c);
+      req.on('end', async () => {
+        try {
+          const input = JSON.parse(body || '{}');
+          const person = await FaceIdentity.enrollFromSnapshot(input.name);
+          res.writeHead(201, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, person, originalsRetained: false }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: e.stderr?.toString().match(/"error":"([^"]+)/)?.[1] || e.message }));
+        }
+      });
+      return;
+    }
+    if (pathname.startsWith('/api/faces/') && req.method === 'DELETE') {
+      const id = decodeURIComponent(pathname.slice('/api/faces/'.length));
+      const ok = FaceIdentity.remove(id);
+      res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok }));
+    }
+    if (pathname === '/api/faces/recognize' && req.method === 'POST') {
+      const result = await FaceIdentity.recognizeAsync(SNAPSHOT_PATH);
+      FaceIdentity.lastRecognition = result;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true, result }));
+    }
 
     // Auto-detected stream profile (codec, resolution, fps + recommended mode/params)
     if (pathname === '/api/stream/profile') {
@@ -2655,6 +4034,7 @@ const server = http.createServer(async (req, res) => {
 
     // Direct low-latency video from the shared single-connection media hub.
     if (pathname === '/api/media/live') {
+      stopSnapshotDaemon('shared live media hub taking over snapshots');
       res.writeHead(200, {
         'Content-Type': `multipart/x-mixed-replace; boundary=${MediaHub.boundary}`,
         'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -2665,12 +4045,21 @@ const server = http.createServer(async (req, res) => {
       try { res.flushHeaders(); req.socket.setNoDelay(true); } catch (e) {}
       MediaHub.addVideoClient(res);
       const cleanup = () => MediaHub.removeVideoClient(res);
-      req.on('close', cleanup); req.on('end', cleanup);
+      req.on('close', cleanup); req.on('end', cleanup); res.on('close', cleanup);
       return;
     }
     if (pathname === '/api/media/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(MediaHub.status()));
+    }
+
+    // Gracefully restart only this HomeSense application. The replacement process
+    // is launched after the current listener and owned media resources close.
+    if (pathname === '/api/system/restart' && req.method === 'POST') {
+      res.writeHead(202, { 'Content-Type': 'application/json', 'Connection': 'close' });
+      res.end(JSON.stringify({ ok: true, message: '知家正在释放资源并重启' }));
+      setTimeout(() => restartApplication(), 120);
+      return;
     }
 
     // Continuous MJPEG stream from Home Assistant/NVR. This reuses HA's
@@ -2870,8 +4259,14 @@ const server = http.createServer(async (req, res) => {
 
       const rtspUrl = config.camera.rtspUrl;
       // Adaptive: prefer auto-detected profile values; fall back to config; final to defaults
-      const fps = streamProfile.recommendedStreamFps || config.camera.streamFps || 8;
-      const width = streamProfile.recommendedStreamWidth || config.camera.streamWidth || 720;
+      // Before profile probing succeeds, honour the explicit camera settings
+      // instead of the conservative 8 FPS placeholder stored in streamProfile.
+      const fps = streamProfile.detectedAt
+        ? streamProfile.recommendedStreamFps
+        : Math.max(8, Math.min(config.camera.streamFps || 15, 15));
+      const width = streamProfile.detectedAt
+        ? streamProfile.recommendedStreamWidth
+        : Math.min(config.camera.streamWidth || 1280, 1280);
       const qv = String(streamProfile.recommendedQv || 10);
 
       // Low-latency ffmpeg pipeline:
@@ -2910,7 +4305,7 @@ const server = http.createServer(async (req, res) => {
         // Output 2: periodic snapshot file (1 frame every 5s) for AI/rules
         '-map', '0:v:0',
         '-an',
-        '-vf', `scale=${snapW}:-2:in_range=tv:out_range=pc,fps=1/5,format=yuvj420p`,
+        '-vf', `scale=${snapW}:-2:in_range=tv:out_range=pc,fps=1/2,format=yuvj420p`,
         '-q:v', '5',
         '-threads', '1',
         '-update', '1',
@@ -2981,6 +4376,21 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify(lastAnalysis));
     }
 
+    if (pathname === '/api/analysis/events') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-store',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+      try { res.flushHeaders(); } catch {}
+      visionSseClients.add(res);
+      res.write(`data: ${JSON.stringify({ type: 'connected', analysis: lastAnalysis, timestamp: Date.now() })}\n\n`);
+      const heartbeat = setInterval(() => { try { res.write(': heartbeat\n\n'); } catch {} }, 20000);
+      req.on('close', () => { clearInterval(heartbeat); visionSseClients.delete(res); });
+      return;
+    }
+
     // LLM token usage stats
     if (pathname === '/api/usage') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3008,7 +4418,33 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname.startsWith('/api/memory/feedback/') && req.method === 'DELETE') {
+      const id = decodeURIComponent(pathname.slice('/api/memory/feedback/'.length));
+      const ok = MemoryEngine.removeFeedback(id);
+      res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok }));
+    }
+
     // ============ Automation Rules ============
+    // Compile a one-sentence household intent into a deterministic, reviewable
+    // policy draft. Compilation does not save a rule or control any device.
+    if (pathname === '/api/rules/compile' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; if (body.length > 64 * 1024) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const { intent } = JSON.parse(body || '{}');
+          const draft = attachDeviceGuard(compileRuleIntent(intent), HomeState.snapshot());
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ draft, saved: false, deviceAction: false }));
+        } catch (error) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: error.message }));
+        }
+      });
+      return;
+    }
+
     // List all rules + meta
     if (pathname === '/api/rules' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3025,7 +4461,18 @@ const server = http.createServer(async (req, res) => {
       req.on('data', c => body += c);
       req.on('end', () => {
         try {
-          const rule = JSON.parse(body || '{}');
+          let rule = JSON.parse(body || '{}');
+          if (rule.policy) {
+            const snapshot = HomeState.snapshot();
+            rule = attachDeviceGuard(rule, snapshot);
+            if (rule.targetEntityId) {
+              const allowedTargets = rule.explanation?.targetCandidates || [];
+              if (!allowedTargets.some(candidate => candidate.entityId === rule.targetEntityId)) {
+                throw new Error('所选设备不属于该动作的候选目标');
+              }
+              rule = bindRuleTarget(rule, rule.targetEntityId, snapshot);
+            }
+          }
           const created = AutomationEngine.add(rule);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(created));
@@ -3098,8 +4545,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': '*'
+        'Connection': 'keep-alive'
       });
       res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
       AutomationEngine.sseClients.add(res);
@@ -3142,7 +4588,12 @@ const server = http.createServer(async (req, res) => {
           const broadcast = tryBroadcastIntent(command);
           if (broadcast.matched) {
             console.log(`[Broadcast] "${command}" → speak "${broadcast.text}" (${broadcast.reason})`);
-            speakReply(broadcast.text, 'broadcast');
+            speakReply(broadcast.text, 'broadcast', { origin: 'broadcast' });
+            AutomationEngine.recordActivity({
+              name: '手动播报', source: 'manual', command,
+              executed: [{ ok: true, broadcast: true, text: broadcast.text }],
+              reply: broadcast.text, success: true
+            });
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
               understood: true,
@@ -3150,6 +4601,30 @@ const server = http.createServer(async (req, res) => {
               reply: broadcast.text,
               source: 'broadcast'
             }));
+            return;
+          }
+
+          const localQuestion = await answerLocalHomeQuestion(command);
+          if (localQuestion) {
+            if (localQuestion.reply) speakReply(localQuestion.reply, 'qaCommand', { origin: 'web' });
+            AutomationEngine.recordActivity({
+              name: '家庭历史问答', source: 'manual', command,
+              executed: [], reply: localQuestion.reply, success: !!localQuestion.ok
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ understood: true, ...localQuestion }));
+            return;
+          }
+
+          const visualQuestion = await answerVisualQuestion(command);
+          if (visualQuestion) {
+            if (visualQuestion.reply) speakReply(visualQuestion.reply, 'qaCommand', { origin: 'web' });
+            AutomationEngine.recordActivity({
+              name: '视觉问答', source: 'manual', command,
+              executed: [], reply: visualQuestion.reply, success: !!visualQuestion.ok
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ understood: true, ...visualQuestion }));
             return;
           }
 
@@ -3191,20 +4666,34 @@ const server = http.createServer(async (req, res) => {
               const summary = await naturalizeReply(executed, command);
               if (summary) result.reply = summary;
             }
-          } else if (config.voice?.qa?.enabled !== false) {
-            // Home parser couldn't act → fall back to QA general assistant
+          } else if (!looksLikeCommand(command) && config.voice?.qa?.enabled !== false) {
+            // Only genuinely conversational input may use the chat fallback.
+            // A home-shaped command with no action must never receive an
+            // invented “已打开/已关闭” answer from the general model.
             const qa = await answerLocalHomeQuestion(command) || await chitchatLLM(command);
             if (qa.reply) {
               result.reply = qa.reply;
               result.qaSource = qa.source;
             }
+          } else {
+            result.reply = result.reply || '没有找到可执行的设备，操作未执行';
+            result.understood = false;
           }
 
           // Broadcast reply through Xiaoai speaker
           if (result.reply) {
             const eventType = (result.executed && result.executed.length) ? 'nlCommand' : 'qaCommand';
-            speakReply(result.reply, eventType);
+            speakReply(result.reply, eventType, { origin: 'web' });
           }
+
+          AutomationEngine.recordActivity({
+            name: result.executed?.length ? '手动控制' : '知家问答',
+            source: 'manual',
+            command,
+            executed: result.executed || [],
+            reply: result.reply || '',
+            success: result.understood !== false
+          });
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(result));
@@ -3241,9 +4730,18 @@ const server = http.createServer(async (req, res) => {
       let body = '';
       req.on('data', chunk => body += chunk);
       req.on('end', async () => {
-        const result = await haRequest('POST', `/api/services/${servicePath}`, JSON.parse(body || '{}'));
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result));
+        try {
+          const result = await haRequest('POST', `/api/services/${servicePath}`, JSON.parse(body || '{}'));
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (error) {
+          // EventEmitter does not observe rejected async callbacks. Converting
+          // HA failures into an HTTP response prevents one bad device service
+          // call from terminating the entire HomeSense process.
+          console.error(`[HA Service] ${servicePath} failed:`, error.message);
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: error.message }));
+        }
       });
       return;
     }
@@ -3279,7 +4777,7 @@ const server = http.createServer(async (req, res) => {
           if (typeof patch.fallbackToLocalSay === 'boolean') config.xiaoai.fallbackToLocalSay = patch.fallbackToLocalSay;
           // Persist to config.json
           try {
-            fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+            writeJsonAtomic(CONFIG_PATH, config);
           } catch (e) {
             console.error('[Xiaoai] persist config failed:', e.message);
           }
@@ -3301,7 +4799,9 @@ const server = http.createServer(async (req, res) => {
       req.on('end', async () => {
         try {
           const { message, speaker } = JSON.parse(body || '{}');
-          const result = await notifyXiaoai(message, speaker);
+          // A manual test is an explicit one-off action. It must remain usable
+          // while automatic Xiaoai broadcasts are disabled or not yet saved.
+          const result = await notifyXiaoai(message, speaker, { ignoreEnabled: true });
           res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(result));
         } catch (e) {
@@ -3345,10 +4845,14 @@ const server = http.createServer(async (req, res) => {
           try { onDisk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8')); } catch { onDisk = config; }
           if (!onDisk.camera) onDisk.camera = {};
           onDisk.camera.rtspUrl = rtspUrl;
-          fs.writeFileSync(CONFIG_PATH, JSON.stringify(onDisk, null, 2));
+          writeJsonAtomic(CONFIG_PATH, onDisk);
           // Update in-memory config
           if (!config.camera) config.camera = {};
           config.camera.rtspUrl = rtspUrl;
+          // A changed camera may expose a valid audio codec, so clear the
+          // compatibility latch and let the shared pipeline probe it again.
+          MediaHub.audioUnavailable = false;
+          MediaHub.lastError = null;
           console.log(`[RTSP] URL updated → ${rtspUrl.replace(/:[^@/]+@/, ':***@').replace(/StmKey=([0-9a-f]{4})[0-9a-f]+/i, 'StmKey=$1***')}`);
           // Hot-kill any ffmpeg currently bound to old URL; periodic loops will respawn with new URL
           try {
@@ -3493,7 +4997,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/voice/start' && req.method === 'POST') {
       config.voiceControl = config.voiceControl || {};
       config.voiceControl.enabled = true;
-      try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2)); } catch (e) {}
+      try { writeJsonAtomic(CONFIG_PATH, config); } catch (e) {}
       const ok = VoicePipeline.start();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ ok, status: VoicePipeline.status() }));
@@ -3501,7 +5005,7 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/voice/stop' && req.method === 'POST') {
       if (config.voiceControl) config.voiceControl.enabled = false;
-      try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2)); } catch (e) {}
+      try { writeJsonAtomic(CONFIG_PATH, config); } catch (e) {}
       const ok = VoicePipeline.stop();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ ok, status: VoicePipeline.status() }));
@@ -3540,10 +5044,13 @@ const server = http.createServer(async (req, res) => {
       req.on('end', () => {
         try {
           const patch = JSON.parse(body || '{}');
+          if (patch.output?.mode && !['follow', 'local', 'xiaoai', 'silent'].includes(patch.output.mode)) {
+            throw new Error('invalid voice output mode');
+          }
           config.voiceControl = { ...(config.voiceControl || {}), ...patch };
           // Persist to disk (best-effort)
           try {
-            fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+            writeJsonAtomic(CONFIG_PATH, config);
           } catch (e) { console.error('[Voice] config persist failed:', e.message); }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, voiceControl: config.voiceControl }));
@@ -3584,7 +5091,7 @@ const server = http.createServer(async (req, res) => {
           if (typeof patch.systemPrompt === 'string') config.voice.qa.systemPrompt = patch.systemPrompt;
           if (typeof patch.fallbackText === 'string') config.voice.qa.fallbackText = patch.fallbackText;
           try {
-            fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+            writeJsonAtomic(CONFIG_PATH, config);
           } catch (e) { console.error('[QA] config persist failed:', e.message); }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, qa: config.voice.qa }));
@@ -3622,6 +5129,10 @@ const server = http.createServer(async (req, res) => {
           url: ha.url || '',
           tokenMasked: mask(haToken),
           hasToken: !!haToken
+        },
+        camera: {
+          previewFps: Math.max(2, Math.min(config.camera?.streamFps || 10, 22)),
+          previewWidth: Math.min(config.camera?.streamWidth || 960, 960)
         },
         availableModels: {
           vision: ['qwen3-vl-235b-a22b-instruct', 'qwen3-vl-plus', 'qwen-vl-max', 'qwen-vl-plus'],
@@ -3667,8 +5178,19 @@ const server = http.createServer(async (req, res) => {
             if (typeof H.url === 'string') config.homeAssistant.url = H.url.trim().replace(/\/$/, '');
             if (typeof H.token === 'string' && !H.token.includes('*')) config.homeAssistant.token = H.token.trim();
           }
-          try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2)); }
+          let cameraPreviewChanged = false;
+          if (patch.camera) {
+            config.camera = config.camera || {};
+            const requestedFps = Number(patch.camera.previewFps);
+            if (Number.isFinite(requestedFps) && requestedFps >= 2 && requestedFps <= 22) {
+              const nextFps = Math.round(requestedFps);
+              cameraPreviewChanged = nextFps !== config.camera.streamFps;
+              config.camera.streamFps = nextFps;
+            }
+          }
+          try { writeJsonAtomic(CONFIG_PATH, config); }
           catch (e) { console.error('[Settings] persist failed:', e.message); }
+          if (cameraPreviewChanged) MediaHub.restart('preview FPS changed');
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, message: '已保存。LLM/HA 配置在下一次调用时生效，无需重启服务。' }));
         } catch (e) {
@@ -3686,11 +5208,22 @@ const server = http.createServer(async (req, res) => {
       req.on('end', async () => {
         try {
           const p = JSON.parse(body || '{}');
-          const url = (p.url || config.homeAssistant?.url || '').replace(/\/$/, '');
+          const url = (p.url ?? config.homeAssistant?.url ?? '').trim().replace(/\/$/, '');
           const tokenRaw = p.token && !p.token.includes('*') ? p.token : config.homeAssistant?.token;
           if (!url || !tokenRaw) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             return res.end(JSON.stringify({ ok: false, error: 'url 或 token 为空' }));
+          }
+          let parsedHaUrl;
+          try {
+            parsedHaUrl = new URL(url);
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ ok: false, error: 'HA 地址格式无效，请填写完整的 http:// 或 https:// 地址' }));
+          }
+          if (!['http:', 'https:'].includes(parsedHaUrl.protocol)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ ok: false, error: 'HA 地址只支持 http:// 或 https://' }));
           }
           const t0 = Date.now();
           const resp = await fetch(`${url}/api/states`, {
@@ -3802,7 +5335,7 @@ const server = http.createServer(async (req, res) => {
             config.voice.qa = config.voice.qa || {};
             config.voice.qa.fallbackText = patch.qaFallbackText;
           }
-          try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2)); }
+          try { writeJsonAtomic(CONFIG_PATH, config); }
           catch (e) { console.error('[Prompts] persist failed:', e.message); }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -3902,11 +5435,59 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+let applicationRestarting = false;
+
+/**
+ * Releases processes and long-lived responses owned by HomeSense, then replaces the
+ * current Node process. It deliberately does not touch unrelated system tasks.
+ */
+function restartApplication() {
+  if (applicationRestarting) return;
+  applicationRestarting = true;
+  console.log('[System] Graceful HomeSense restart requested');
+
+  try { VoicePipeline.stop(); } catch {}
+  try { stopSnapshotDaemon('application restart'); } catch {}
+  if (snapshotRefreshProcess && !snapshotRefreshProcess.killed) {
+    try { snapshotRefreshProcess.kill('SIGKILL'); } catch {}
+    snapshotRefreshProcess = null;
+  }
+  MediaHub.videoClients.forEach(client => { try { client.end(); } catch {} });
+  MediaHub.videoClients.clear();
+  MediaHub.audioSubscribers.clear();
+  if (MediaHub.restartTimer) { clearTimeout(MediaHub.restartTimer); MediaHub.restartTimer = null; }
+  if (MediaHub.watchdogTimer) { clearInterval(MediaHub.watchdogTimer); MediaHub.watchdogTimer = null; }
+  MediaHub.stopProcess('application restart');
+  try { HaRealtime?.stop(); } catch {}
+
+  for (const clients of [visionSseClients, AutomationEngine.sseClients, VoicePipeline.sseClients]) {
+    clients?.forEach(client => { try { client.end(); } catch {} });
+    clients?.clear?.();
+  }
+
+  // Positional shell arguments avoid interpolating executable paths into code.
+  const replacement = spawn('/bin/sh', ['-c', 'sleep 1; exec "$1" "$2"', 'nova-restart', process.execPath, __filename], {
+    cwd: __dirname,
+    detached: true,
+    stdio: 'ignore',
+    env: process.env
+  });
+  replacement.unref();
+
+  const exitCurrent = () => {
+    try { RuntimeStore.close(); } catch {}
+    process.exit(0);
+  };
+  try { server.close(exitCurrent); } catch { exitCurrent(); }
+  setTimeout(exitCurrent, 700).unref();
+}
+
+server.listen(PORT, SECURITY.host, () => {
   console.log(`\n${'='.repeat(50)}`);
   console.log(`  Smart Home AI Control Panel`);
   console.log(`${'='.repeat(50)}`);
-  console.log(`  Server:    http://localhost:${PORT}`);
+  console.log(`  Server:    http://${SECURITY.host}:${PORT}`);
+  console.log(`  Access:    ${SECURITY.localOnly ? 'local only' : 'token protected'}`);
   console.log(`  HA:        ${config.homeAssistant.url}`);
   console.log(`  Camera:    ${config.camera.rtspUrl.replace(/:[^@]+@/, ':***@')}`);
   console.log(`  AI Model:  ${config.ai.model}`);
@@ -3917,7 +5498,39 @@ server.listen(PORT, () => {
   }
   console.log(`${'='.repeat(50)}\n`);
   AutomationEngine.load();
+  if (!AutomationEngine.rules.some(rule => rule.id === 'nova-study-dark-observation-v1')) {
+    AutomationEngine.add({
+      id: 'nova-study-dark-observation-v1',
+      name: '书房晚间进入且光线较暗',
+      trigger: 'vision',
+      condition: '书房有人，并且光照低于 80 lx，持续 10 秒',
+      action: '打开书房灯',
+      cooldownSec: 300,
+      enabled: true,
+      policy: {
+        schemaVersion: 1,
+        logic: 'all',
+        durationSec: 10,
+        confidenceThreshold: 0.65,
+        conditions: [
+          { kind: 'occupancy', space: '书房', operator: 'eq', value: 'occupied', label: '书房有人' },
+          { kind: 'environment', space: '书房', metric: 'illuminance', operator: 'lt', value: 80, label: '书房光照低于 80 lx' }
+        ],
+        generatedFrom: '系统推荐的首个低风险观察场景'
+      },
+      explanation: {
+        summary: '验证晚间进入书房时是否需要自动开灯',
+        sources: ['书房人体感知', '书房光照传感器'],
+        stability: ['条件持续 10 秒', '冷却 300 秒', '观察模式不执行设备'],
+        action: '打开书房灯'
+      }
+    });
+  }
+  HomeState.subscribe(event => AutomationEngine.handleStateEvent(event));
+  HomeState.subscribe((event, state) => SpatialEngine.observe(event, state));
+  HomeState.subscribe(event => DecisionQuality.observe(event));
   startPeriodicTasks();
+  startHaRealtime();
   if (config.voiceControl?.enabled) {
     setTimeout(() => VoicePipeline.start(), 1500);
   }
