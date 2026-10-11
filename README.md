@@ -109,12 +109,17 @@ cp config.json.example config.json
     "rtspUrl": "rtsp://USER:PASSWORD@192.168.X.X:554/..."
   },
   "ai": {
-    "apiKey": "YOUR_MODEL_API_KEY"
+    "baseUrl": "http://127.0.0.1:11434/v1/chat/completions",
+    "apiKey": "ollama",
+    "model": "qwen3-vl:8b",
+    "commandModel": "qwen3:8b"
   }
 }
 ```
 
 Home Assistant 长期访问令牌可以在 HA 的“个人资料 → 安全 → 长期访问令牌”中创建。
+
+上面的示例连接本机运行的 Ollama。模型推理在本地完成，摄像头画面、家庭状态和自然语言指令无需发送到外部模型服务。`apiKey` 对 Ollama 只是兼容字段，保留为任意非空值即可。如果 HomeSense 运行在 Docker 中，请将 `127.0.0.1` 改为容器可以访问的 Ollama 地址，例如 `host.docker.internal` 或宿主机局域网 IP。
 
 ### 4. 启动
 
@@ -209,16 +214,20 @@ NAS CPU 较弱时，建议摄像头输出 1080p H.264，避免 4K HEVC 软解把
 
 ### AI 模型
 
+推荐优先连接家庭网络内运行的 Ollama：
+
 ```json
 "ai": {
-  "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-  "apiKey": "sk-...",
-  "model": "qwen3-vl-235b-a22b-instruct",
-  "commandModel": "qwen3-max"
+  "baseUrl": "http://127.0.0.1:11434/v1/chat/completions",
+  "apiKey": "ollama",
+  "model": "qwen3-vl:8b",
+  "commandModel": "qwen3:8b"
 }
 ```
 
-`model` 用于画面理解，`commandModel` 用于自然语言设备控制。
+`model` 用于摄像头画面理解，应配置 Ollama 中已经安装、支持视觉输入的模型；`commandModel` 用于语言意图理解和自然语言设备控制。模型名称必须与 `ollama list` 显示的名称一致。
+
+本地部署时，模型请求只在本机或家庭局域网中传输，更适合处理摄像头画面、设备状态和家庭习惯等敏感数据。HomeSense 也兼容其他 OpenAI 格式的模型接口；如需使用云端服务，再将 `baseUrl`、`apiKey` 和模型名称替换为对应服务的配置。
 
 ### 语音控制
 
