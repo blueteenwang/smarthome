@@ -81,7 +81,7 @@ flowchart LR
 - Node.js `>= 22.5`
 - 可访问的 Home Assistant 实例
 - 摄像头视频流地址
-- 一个 OpenAI 兼容的模型服务 API Key，例如 DashScope
+- 模型服务（二选一）：本地 Ollama，或阿里云百炼 DashScope API Key
 - 可选：ffmpeg，本机摄像头/音频处理会用到
 
 ### 2. 拉取项目
@@ -228,6 +228,28 @@ NAS CPU 较弱时，建议摄像头输出 1080p H.264，避免 4K HEVC 软解把
 `model` 用于摄像头画面理解，应配置 Ollama 中已经安装、支持视觉输入的模型；`commandModel` 用于语言意图理解和自然语言设备控制。模型名称必须与 `ollama list` 显示的名称一致。
 
 本地部署时，模型请求只在本机或家庭局域网中传输，更适合处理摄像头画面、设备状态和家庭习惯等敏感数据。HomeSense 也兼容其他 OpenAI 格式的模型接口；如需使用云端服务，再将 `baseUrl`、`apiKey` 和模型名称替换为对应服务的配置。
+
+#### 云端千问（DashScope）
+
+部署设备没有足够的内存或 GPU 时，可以使用阿里云百炼的云端千问模型。当前推荐配置是：
+
+```json
+"ai": {
+  "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+  "apiKey": "sk-***YOUR_DASHSCOPE_API_KEY***",
+  "model": "qwen3-vl-235b-a22b-instruct",
+  "commandModel": "qwen3-max"
+}
+```
+
+- `qwen3-vl-235b-a22b-instruct` 用于摄像头图片理解。
+- `qwen3-max` 用于自然语言设备控制。
+- 如果启用语音识别，配置模板默认使用 `qwen3-omni-flash`。
+- 真实 API Key 只能写入本机的 `config.json`，不要复制到 README、配置模板、Issue、截图或日志中。
+
+`config.json`、`.env` 和常见配置备份文件已经被 Git 忽略，Docker 构建也会排除真实配置。提交前仍应运行 `git status --short`，确认没有使用 `git add -f` 强制加入敏感文件。如果 Key 曾出现在聊天、提交历史或公开文件中，应立即在百炼控制台吊销并重新创建；仅删除文件不能让旧 Key 失效。
+
+云端方案会把抽取的摄像头图片，以及启用后的音频片段发送到 DashScope。对隐私要求较高时，可以关闭音频、降低视觉分析频率，或继续使用 Ollama 本地模型。
 
 ### 语音控制
 
