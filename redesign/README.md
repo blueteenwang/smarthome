@@ -5,8 +5,6 @@
 ## 文件
 
 - `mockup.html` — 单文件、自包含、纯 HTML + CSS + 极少 JS（count-up 演示）。本地双击即开。
-- `preview/01-top.jpg` — 渲染后首屏（Chrome 1512×900）
-- `preview/02-stats-devices.jpg` — 渲染后第二屏（stats-bar + 设备网格）
 
 ## 改造逐项核对
 
