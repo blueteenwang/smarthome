@@ -33,9 +33,11 @@ const { VoiceConversationSession, expandHouseholdFollowUp } = require('./lib/voi
 const { isVisualQuestion } = require('./lib/visual-question');
 
 // Load config
-const CONFIG_PATH = path.join(__dirname, 'config.json');
-const ACTIVITY_HISTORY_PATH = path.join(__dirname, 'activity-history.json');
-const FACE_DATA_DIR = path.join(__dirname, 'face-data');
+const RUNTIME_DATA_DIR = process.env.HOMESENSE_DATA_DIR || process.env.HAVENMIND_DATA_DIR || process.env.NOVA_DATA_DIR || __dirname;
+fs.mkdirSync(RUNTIME_DATA_DIR, { recursive: true });
+const CONFIG_PATH = process.env.HOMESENSE_CONFIG_PATH || path.join(__dirname, 'config.json');
+const ACTIVITY_HISTORY_PATH = path.join(RUNTIME_DATA_DIR, 'activity-history.json');
+const FACE_DATA_DIR = path.join(RUNTIME_DATA_DIR, 'face-data');
 const FACE_INDEX_PATH = path.join(FACE_DATA_DIR, 'index.json');
 const FACE_HELPER_PATH = path.join(__dirname, '.local', 'bin', 'face-vision');
 const FACE_HELPER_SOURCE = path.join(__dirname, 'scripts', 'face-vision.swift');
@@ -47,10 +49,9 @@ const PORT = config.server.port || 8090;
 const SECURITY = resolveSecurity(config);
 const SNAPSHOT_DIR = path.join(__dirname, 'snapshots');
 const SNAPSHOT_PATH = path.join(SNAPSHOT_DIR, 'latest.jpg');
-const HOME_STATE_PATH = path.join(__dirname, 'home-state.json');
-const HOME_EVENTS_PATH = path.join(__dirname, 'home-events.json');
-const DECISION_QUALITY_PATH = path.join(__dirname, 'decision-quality.json');
-const RUNTIME_DATA_DIR = process.env.HOMESENSE_DATA_DIR || process.env.HAVENMIND_DATA_DIR || process.env.NOVA_DATA_DIR || __dirname;
+const HOME_STATE_PATH = path.join(RUNTIME_DATA_DIR, 'home-state.json');
+const HOME_EVENTS_PATH = path.join(RUNTIME_DATA_DIR, 'home-events.json');
+const DECISION_QUALITY_PATH = path.join(RUNTIME_DATA_DIR, 'decision-quality.json');
 const RUNTIME_LEDGER_PATH = path.join(RUNTIME_DATA_DIR, 'nova-runtime.sqlite');
 
 // The household state core is the stable boundary between unreliable sensor
@@ -910,7 +911,7 @@ function broadcastVision(event) {
 // A deliberately small, inspectable memory layer. It stores observations and
 // user feedback locally, derives lightweight habits without extra LLM calls,
 // and never executes a learned behaviour until it becomes an explicit rule.
-const MEMORY_PATH = path.join(__dirname, 'memory.json');
+const MEMORY_PATH = path.join(RUNTIME_DATA_DIR, 'memory.json');
 const MemoryEngine = {
   data: { observations: [], feedback: [], preferences: [], createdAt: new Date().toISOString() },
   load() {
@@ -3819,6 +3820,10 @@ const MIME_TYPES = {
 const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
+  if (pathname === '/healthz' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ status: 'ok', version: require('./package.json').version }));
+  }
 
   // Never reflect arbitrary web origins into HomeSense's privileged household API.
   const allowedOrigin = corsOrigin(req, SECURITY);

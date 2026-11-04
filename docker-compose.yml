@@ -17,7 +17,8 @@ services:
   homesense:
     # 镜像名：build 后的本地名（如果你不打 registry，用本地名即可）
     # 如果群晖通过 docker save | scp 导入，导入后镜像名一致即可直接用
-    image: homesense:latest
+    image: homesense:${HOMESENSE_VERSION:-0.3.0}
+    build: .
     container_name: homesense
 
     # ⚠️ 网络模式（默认 bridge，推荐分发场景使用）
@@ -38,7 +39,7 @@ services:
     #   - snapshots/：摄像头快照缓存，volume 而非 bind 也行，数据可丢
     #   - audio/：音频采样缓存，同上
     volumes:
-      - ./config.json:/app/config.json:rw
+      - ./config:/app/config:rw
       - ./snapshots:/app/snapshots:rw
       - ./audio:/app/audio:rw
       - ./runtime:/app/runtime:rw
@@ -48,6 +49,7 @@ services:
       - TZ=Asia/Shanghai
       - NODE_ENV=production
       - HOMESENSE_DATA_DIR=/app/runtime
+      - HOMESENSE_CONFIG_PATH=/app/config/config.json
       - HOMESENSE_HOST=0.0.0.0
       # 局域网监听必须配置至少 24 位随机令牌；不要把真实令牌提交到仓库。
       - HOMESENSE_ACCESS_TOKEN=${HOMESENSE_ACCESS_TOKEN:?请在 .env 中设置 HOMESENSE_ACCESS_TOKEN}

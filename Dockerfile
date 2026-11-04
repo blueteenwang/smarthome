@@ -35,11 +35,10 @@ WORKDIR /app
 
 # 复制项目源码
 # 注意：.dockerignore 把无关文件（before/, redesign/, *.bak, .DS_Store）排除掉
-COPY server.js ./
+COPY server.js package.json ./
 COPY lib ./lib
 COPY index-world.html ./
 COPY index.html ./
-COPY index-v2.html ./
 COPY mse-test.html ./
 COPY scripts ./scripts
 COPY config.json.example ./config.json.example
@@ -48,7 +47,7 @@ COPY config.json.example ./config.json.example
 # 第一次启动时容器内 config.json 不存在，需要从挂载点提供，否则 server.js 会 panic
 
 # 持久化目录：snapshots/ + audio/ 容器创建时为空，由代码运行时写入
-RUN mkdir -p /app/snapshots /app/audio && \
+RUN mkdir -p /app/snapshots /app/audio /app/runtime /app/config && \
     chown -R node:node /app
 
 # 用 node 用户跑，避免 root（群晖 docker 通常用 PUID=1026/PGID=100，可在 compose 里 override）
@@ -60,7 +59,7 @@ EXPOSE 8090
 # 健康检查：30s 一次打 /api/snapshot.json，2 次失败认为不健康
 # 群晖 Container Manager 会读这个状态显示绿/黄/红
 HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=2 \
-    CMD-SHELL curl -fsS --max-time 5 -H "Authorization: Bearer ${HOMESENSE_ACCESS_TOKEN:-${HAVENMIND_ACCESS_TOKEN:-$NOVA_ACCESS_TOKEN}}" http://127.0.0.1:8090/api/media/status > /dev/null || exit 1
+    CMD ["curl", "-fsS", "--max-time", "5", "http://127.0.0.1:8090/healthz"]
 
 # tini 作 PID 1 — 转发信号给 node，node 退出后 ffmpeg 子进程也会随 OOM/SIGKILL 一起死，避免僵尸
 ENTRYPOINT ["/usr/bin/tini", "--"]

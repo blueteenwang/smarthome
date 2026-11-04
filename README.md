@@ -136,7 +136,8 @@ Docker 部署适合群晖、Linux 小主机、NAS 或长期运行的家庭服务
 ### 1. 准备配置文件
 
 ```bash
-cp config.json.example config.json
+mkdir -p config runtime snapshots audio
+cp config.json.example config/config.json
 cp .env.example .env
 ```
 
@@ -151,7 +152,7 @@ HOMESENSE_ACCESS_TOKEN=replace-with-a-long-random-token
 ### 2. 构建并启动
 
 ```bash
-docker build -t homesense:latest .
+docker build -t homesense:0.3.0 .
 docker compose up -d
 ```
 
@@ -301,4 +302,6 @@ npm run check
 
 **知家（HomeSense）**：“知”代表感知与理解，“家”点明智能家居的定位。
 
-界面与服务提示使用“知家”，包名、镜像名和容器名使用 `homesense`，环境变量使用 `HOMESENSE_*`。服务兼容旧版 `NOVA_*` 和 `HAVENMIND_*` 环境变量，旧主题偏好键和运行账本文件名保持兼容，已有数据无需迁移。
+界面与服务提示使用“知家”，包名、镜像名和容器名使用 `homesense`，环境变量使用 `HOMESENSE_*`。服务兼容旧版 `NOVA_*` 和 `HAVENMIND_*` 环境变量，旧主题偏好键和运行账本文件名保持兼容，旧版 Docker 部署需要按 v0.3 升级文档迁移数据。
+
+> v0.3 Docker 配置已改为 `config/config.json` 目录挂载。旧版升级前请阅读 [v0.3 安装、备份与回退](docs/UPGRADE_0.3.md)，该文档优先于旧部署示例。当前 v0.3 为未发布开发版本。

@@ -1,0 +1,26 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
+test('offline backup verifies integrity, restores and migrates without overwriting', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'homesense-backup-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = path.join(root, 'old'); fs.mkdirSync(source);
+  fs.writeFileSync(path.join(source, 'config.json'), '{"server":{"port":8090}}');
+  fs.writeFileSync(path.join(source, 'memory.json'), '{"feedback":[]}');
+  fs.writeFileSync(path.join(source, '.env'), 'HOMESENSE_ACCESS_TOKEN=test-only');
+  const run = (action, from, to) => spawnSync(process.execPath, [path.resolve('scripts/data-admin.js'), action, from, to, '--service-stopped']);
+  const backup = path.join(root, 'backup'), restored = path.join(root, 'restored'), staged = path.join(root, 'staged');
+  assert.equal(run('backup', source, backup).status, 0);
+  assert.equal(run('restore', backup, restored).status, 0);
+  assert.equal(fs.readFileSync(path.join(restored, 'memory.json'), 'utf8'), '{"feedback":[]}');
+  assert.equal(run('restore', backup, restored).status, 1);
+  assert.equal(run('migrate', restored, staged).status, 0);
+  assert.ok(fs.existsSync(path.join(staged, 'config/config.json')));
+  assert.ok(fs.existsSync(path.join(staged, 'runtime/memory.json')));
+  assert.equal(fs.readFileSync(path.join(staged, '.env'), 'utf8'), 'HOMESENSE_ACCESS_TOKEN=test-only');
+  fs.writeFileSync(path.join(backup, 'memory.json'), 'tampered');
+  assert.equal(run('restore', backup, path.join(root, 'bad')).status, 1);
+});

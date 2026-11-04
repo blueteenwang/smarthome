@@ -86,7 +86,7 @@ scp /tmp/config.json USER@NAS_IP:/volume1/docker/homesense/config.json
 ssh USER@NAS_IP
 cd /volume1/docker/homesense
 
-sudo docker build -t homesense:latest .
+sudo docker build -t homesense:0.3.0 .
 # 第一次约 2-4 分钟（拉 node:22-bookworm-slim + apt 装 ffmpeg）
 
 # 验证
@@ -132,10 +132,10 @@ curl -s http://NAS_IP:8090/api/snapshot.json | head -c 200
 cd /path/to/homesense
 
 # 1) build（Mac 是 arm64，群晖是 x86 → 加 --platform 交叉编译）
-docker build --platform linux/amd64 -t homesense:latest .
+docker build --platform linux/amd64 -t homesense:0.3.0 .
 
 # 2) 导出
-docker save homesense:latest -o homesense.tar
+docker save homesense:0.3.0 -o homesense.tar
 
 # 3) 传到群晖
 scp homesense.tar USER@NAS_IP:/volume1/docker/homesense/
@@ -238,12 +238,12 @@ sudo docker restart homesense
 cd /volume1/docker/homesense
 git pull   # 如果用 git；否则手动 rsync 新代码
 sudo docker compose down
-sudo docker build -t homesense:latest .
+sudo docker build -t homesense:0.3.0 .
 sudo docker compose up -d
 
 # 停 / 删
 sudo docker compose down
-sudo docker rmi homesense:latest
+sudo docker rmi homesense:0.3.0
 ```
 
 ---
@@ -273,9 +273,11 @@ snapshots/ + audio/ 是缓存，不用备份。
 
 - 把镜像推到 Docker Hub：
   ```bash
-  docker tag homesense:latest YOUR_DOCKERHUB_USER/homesense:0.1.0
+  docker tag homesense:0.3.0 YOUR_DOCKERHUB_USER/homesense:0.1.0
   docker push YOUR_DOCKERHUB_USER/homesense:0.1.0
   ```
 - 别人 docker-compose.yml 里 image 改成 `YOUR_DOCKERHUB_USER/homesense:0.1.0`，`docker compose up -d` 就跑起来了
 
 > 这步等社区文章 + GitHub 仓库立稳之后再做，先别急。
+
+> v0.3 Docker 配置已改为 `config/config.json` 目录挂载。旧版升级前请阅读 [v0.3 安装、备份与回退](docs/UPGRADE_0.3.md)，该文档优先于旧部署示例。当前 v0.3 为未发布开发版本。

@@ -20,3 +20,6 @@ snapshots/
 audio/
 .DS_Store
 *.log
+
+config/
+backups/

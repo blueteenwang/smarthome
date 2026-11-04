@@ -42,3 +42,18 @@ docker-compose*.yml
 .env.*
 .git/
 .github/
+
+# Private data and backups
+config/
+config*.json
+!config.json.example
+*.sqlite*
+memory.json
+activity-history.json*
+home-state.json*
+home-events.json*
+decision-quality.json*
+face-data/
+runtime/
+backups/
+.local/
