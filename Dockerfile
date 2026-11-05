@@ -1,5 +1,5 @@
 # =============================================================================
-# Smart Home AI Dashboard — Synology / Linux Docker image
+# Smart Home AI Dashboard — Linux container image for compatible Docker hosts
 # =============================================================================
 # Base: node:22-bookworm-slim
 #   - 包含 Node.js 22 LTS + 内置 SQLite + glibc + apt 包管理
@@ -7,7 +7,7 @@
 #   - 跨平台稳定，arm64/amd64 都能跑
 #
 # 装 ffmpeg：用 Debian 官方的 ffmpeg，含 libx264 / libx265 / 必要 demuxer/muxer
-#   - 体积约 +85MB；对群晖来说毫无压力
+#   - 安装体积与运行资源需求以实际构建和视频负载为准
 #
 # 运行时只暴露 8090 端口；配置、媒体缓存与 SQLite 账本走 volume 挂载
 # =============================================================================
@@ -56,7 +56,7 @@ USER node
 # 暴露后端端口（与 config.json 里 server.port 默认 8090 对齐）
 EXPOSE 8090
 
-# 健康检查：30s 一次打 /api/snapshot.json，2 次失败认为不健康
+# 健康检查：30s 一次打 /healthz，2 次失败认为不健康
 # 群晖 Container Manager 会读这个状态显示绿/黄/红
 HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=2 \
     CMD ["curl", "-fsS", "--max-time", "5", "http://127.0.0.1:8090/healthz"]

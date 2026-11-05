@@ -54,7 +54,7 @@ flowchart LR
 - `lib/`：家庭状态、执行账本、空间智能、安全边界、规则策略等模块。
 - `index-world.html`：当前主要 Web 控制台。
 - `config.json.example`：完整配置模板。
-- `docker-compose.yml` / `Dockerfile`：Linux、NAS、群晖部署入口。
+- `docker-compose.yml` / `Dockerfile`：兼容 Docker 环境的多平台部署入口。
 
 ## 功能概览
 
@@ -129,9 +129,9 @@ http://localhost:8090/
 
 默认只监听 `127.0.0.1`，不会把家庭设备、人脸数据、摄像头画面和家庭记忆暴露到局域网。
 
-## Docker / NAS 部署
+## Docker 多平台部署
 
-Docker 部署适合群晖、Linux 小主机、NAS 或长期运行的家庭服务器。
+Docker 部署可用于具备兼容容器环境的电脑、服务器、小主机和 NAS。平台边界与可选功能见部署指南。
 
 ### 1. 准备配置文件
 
@@ -180,7 +180,7 @@ docker logs -f homesense
 docker restart homesense
 ```
 
-更完整的群晖部署、打包、排障和备份说明见 [DEPLOY.md](DEPLOY.md)。
+完整的多平台部署、模型接口、排障和备份说明见 [DEPLOY.md](DEPLOY.md)。
 
 ## 常见配置项
 
@@ -288,7 +288,7 @@ npm run check
 ├── config.json.example       # 配置模板
 ├── docker-compose.yml        # Docker / NAS 部署
 ├── Dockerfile                # 镜像构建
-├── DEPLOY.md                 # 群晖与 Linux 部署细节
+├── DEPLOY.md                 # 多平台部署与运行条件
 ├── ARCHITECTURE.md           # 架构说明
 ├── docs/                     # 阶段设计与实现文档
 └── test/                     # Node.js 测试

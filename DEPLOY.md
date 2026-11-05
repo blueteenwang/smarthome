@@ -1,283 +1,130 @@
-# Synology 部署指南
+# 多平台部署指南
 
-把 Smart Home AI Dashboard 跑在群晖 NAS 上，24h 守家。
+HomeSense 是 Node.js 智能家居应用，可以直接运行，也可以通过 Docker 运行。部署设备可以是电脑、服务器、小主机或具备兼容容器环境的 NAS，不限定群晖品牌或型号。
 
----
+本文对应 v0.3 开发代码。安装前核对所用分支、版本和配置模板；不要将开发功能当作已发布稳定能力。
 
-## 0. 先决条件
+## 运行条件与平台边界
 
-- 群晖型号 ≥ DS218+/DS920+（推荐 x86_64 Intel/AMD 芯片）
-- DSM ≥ 7.2，已安装 **Container Manager**（套件中心搜索安装；旧版叫 Docker）
-- 已开启 **SSH**（控制面板 → 终端机和 SNMP → 启用 SSH）
-- HA 实例可达
-- DashScope API Key（https://bailian.console.aliyun.com/）
-- 摄像头 RTSP URL
+| 项目 | 实际要求 |
+| --- | --- |
+| 直接运行 | Node.js >=22.5，包含内置 node:sqlite |
+| 容器运行 | 可运行本项目 Linux 镜像的 Docker 环境；使用 Compose 时需安装相应插件 |
+| 视频和音频处理 | 相应功能需要 ffmpeg；Dockerfile 已安装 |
+| 设备状态和控制 | 当前通过可访问的 Home Assistant 实例及其访问令牌提供 |
+| AI 画面理解与语言解析 | 需要兼容应用请求格式的模型服务，可在本机、局域网或云端运行 |
+| 资源容量 | 取决于视频路数、分辨率、编码、推理方式与并发量，没有经过测量的统一最低内存或具体机型要求 |
 
----
+核心服务与 Docker 路径不限定宿主机品牌。macOS、Linux、Windows 可按运行环境选择方式，但目前没有完整的平台/硬件验收矩阵，不能承诺每一种组合都已经测试。Windows 使用 Linux 容器环境运行项目镜像；原生运行需要单独检查 Node、ffmpeg 与平台相关功能。
 
-## 1. 确认架构
+部分辅助功能包含平台实现：本地人脸助手使用 Swift/Vision，本机音频采集与语音输出有 macOS 路径。核心服务可跨平台不代表这些辅助功能在所有平台行为一致。Linux 容器的硬件解码能力取决于实际设备、驱动、ffmpeg 和设备映射，不能笼统认定 NAS 只能软解。
 
-SSH 到群晖：
+## 模型接口：本地与云端均可
 
-```bash
-ssh USER@NAS_IP
-uname -m
-# x86_64 → Intel/AMD 群晖（最常见）
-# aarch64 → arm64 群晖
+本项目使用的是 **OpenAI 兼容的模型请求格式**，不是要求购买 OpenAI 服务，也不是 OpenAPI 规范。DashScope 是可选供应商，不是部署前置条件。
+
+`ai.baseUrl` 当前是完整的 Chat Completions 请求地址，必须包含服务要求的路径；`ai.model` 用于画面理解，需要支持图片输入；`ai.commandModel` 用于语言指令解析。
+
+本地 Ollama 的配置形式：
+
+```json
+{
+  "ai": {
+    "baseUrl": "http://127.0.0.1:11434/v1/chat/completions",
+    "apiKey": "ollama",
+    "model": "YOUR_INSTALLED_VISION_MODEL",
+    "commandModel": "YOUR_INSTALLED_TEXT_MODEL"
+  }
+}
 ```
 
----
+先在 Ollama 安装所选模型，模型名应与实际安装结果一致；视觉模型、语音模型的输入能力需分别确认。兼容 HTTP 格式不保证所有供应商支持相同模型、图片或音频请求。
 
-## 2. 推荐路径：在群晖直接 build（最稳）
+也可连接云端兼容服务，将地址、模型和凭据替换为供应商提供的配置。真实凭据仅保存在部署环境，不写入仓库。云端推理会发送相应输入数据，选择前确认哪些图片、音频和上下文会离开本地。
 
-### 2.1 准备目录
+容器中的 localhost 指向容器自身。模型、HA 或摄像头位于容器外时，应填写该容器实际可达的服务地址；不要照搬固定网关或假定 host 网络在所有平台可用。
 
-群晖 SSH 里：
+## 方式一：直接运行
 
-```bash
-sudo mkdir -p /volume1/docker/homesense
-sudo chown -R $USER:users /volume1/docker/homesense
-cd /volume1/docker/homesense
+```sh
+git clone https://github.com/blueteenwang/smarthome.git
+cd smarthome
+cp config.json.example config.json
 ```
 
-### 2.2 把源码传上来
+编辑本机 config.json，配置自己的 HA、模型与按需启用的摄像头/语音参数。模板是字段示例，不是可直接连接的运行配置。安装符合条件的 Node.js；启用媒体处理时确保 ffmpeg 可执行。
 
-Mac 端（一次拷贝）：
-
-```bash
-cd /path/to/homesense
-
-# 用 rsync 排除大文件 + 不该传的文件
-rsync -av --progress \
-  --exclude='.DS_Store' \
-  --exclude='*.bak' \
-  --exclude='before/' \
-  --exclude='redesign/' \
-  --exclude='snapshots/' \
-  --exclude='audio/' \
-  --exclude='config.json' \
-  ./ USER@NAS_IP:/volume1/docker/homesense/
+```sh
+npm start
 ```
 
-> 注意：故意不传 `config.json`（含 token 等敏感信息），等下单独传脱敏副本
+默认访问 `http://127.0.0.1:8090/`。Windows 原生命令行可使用其对应的文件复制命令完成配置。
 
-### 2.3 准备 config.json
+可以通过 HOMESENSE_CONFIG_PATH 指定配置文件，通过 HOMESENSE_DATA_DIR 指定私有运行目录。默认本机监听；需要局域网监听时设置 HOMESENSE_HOST，并设置至少24字符的 HOMESENSE_ACCESS_TOKEN。不要将访问令牌发到 Issue 或截图。
 
-Mac 端复制脱敏模板，填好真实值：
+账号功能正在开发，尚未包含在本次文档提交对应的稳定能力中；当前版本仍使用令牌或本机访问方式。后续账号功能发布时会补充首次管理员初始化与权限说明。
 
-```bash
-cp config.json.example /tmp/config.json
-# 编辑 /tmp/config.json，填入：
-#   - homeAssistant.url + token
-#   - camera.rtspUrl
-#   - ai.apiKey
-#   - xiaoai 配置（可选）
+## 方式二：Docker Compose
+
+适用于具备兼容 Docker 环境的 Linux、macOS、Windows 与 NAS。Docker 镜像运行 Linux 应用环境。
+
+```sh
+git clone https://github.com/blueteenwang/smarthome.git
+cd smarthome
+mkdir -p config runtime snapshots audio
+cp config.json.example config/config.json
+cp .env.example .env
 ```
 
-传到群晖：
+编辑 config/config.json 和 .env。容器默认使用 UID 1000 的 node 用户，挂载目录和配置文件必须允许实际运行用户读写。根据宿主机权限设置所有者或 Compose user；没有适用于所有 NAS 的固定 UID，不要通过全员可写权限解决问题。
 
-```bash
-scp /tmp/config.json USER@NAS_IP:/volume1/docker/homesense/config.json
+```sh
+docker compose build
+docker compose up -d
+docker compose ps
+docker compose logs --tail 100 homesense
 ```
 
-### 2.4 在群晖 SSH 内 build
+访问 `http://HOST:8090/`，将 HOST 替换为部署设备的可达地址。Compose 默认要求访问令牌；账号初始化行为取决于所用版本，见上面的版本说明。
 
-```bash
-ssh USER@NAS_IP
-cd /volume1/docker/homesense
+健康检查：
 
-sudo docker build -t homesense:0.3.0 .
-# 第一次约 2-4 分钟（拉 node:22-bookworm-slim + apt 装 ffmpeg）
-
-# 验证
-sudo docker images homesense
-# REPOSITORY      TAG       IMAGE ID    SIZE
-# homesense   latest    abcd1234    ~280MB
+```sh
+curl -fsS http://127.0.0.1:8090/healthz
 ```
 
-### 2.5 启动
+该接口只表示服务存活，不代表 HA、模型和摄像头均已连接。
 
-```bash
-cd /volume1/docker/homesense
-sudo docker compose up -d   # 注意 DSM 7.2+ 是 `docker compose`（无横线），旧版是 `docker-compose`
+| 挂载 | 内容 |
+| --- | --- |
+| ./config → /app/config | 连接配置、规则等，可原子保存 |
+| ./runtime → /app/runtime | 家庭状态、历史、反馈、账本等持久化数据 |
+| ./snapshots → /app/snapshots | 图片缓存 |
+| ./audio → /app/audio | 音频缓存 |
 
-# 实时看日志
-sudo docker logs -f homesense
+## NAS 与群晖的可选说明
+
+NAS 只是部署宿主机的一种。先确认设备架构、容器运行环境和目录权限，是否支持本项目镜像以实际构建与运行结果为准。不同 CPU 型号不能用“型号大于等于某款”表达兼容性。
+
+群晖用户可在设备支持的容器管理工具中导入 Compose 项目。界面、套件名称和可用功能依系统版本而异，本文不限定 DSM 版本、SSH 或固定存储路径。源码构建可在其他兼容设备完成，NAS 不一定需要启用 SSH。
+
+跨设备导入镜像时，构建目标必须匹配运行端架构。不能假定所有 Mac 都是 arm64，也不能假定所有 NAS 都是 x86。项目 CI 配置了 amd64/arm64 发布路径，但在实际标签构建成功前，不应将镜像当作已发布产物。
+
+## 排查问题
+
+- 启动立即退出：检查配置是否存在、JSON 是否有效、Node 是否支持 node:sqlite，以及挂载权限。
+- HA 不可达：从应用运行环境检查地址与访问权限，容器网络与宿主机网络分别排查。
+- 模型失败：检查完整请求地址、模型名、认证方式与输入模态，不要只检查供应商名称。
+- 视频处理负载高：先降低输入分辨率、帧率或使用合适子码流，再验证硬件解码路径；不承诺固定内存配额适用所有设备。
+- 摄像头失败：分别检查地址、网络、认证和编码；切换网络模式不能自动解决认证问题。
+- 贴日志前删除凭据、内部地址、设备标识和家庭画面。
+
+## 升级与备份
+
+参考 [v0.3 备份、迁移与回退](docs/UPGRADE_0.3.md)。停止服务后备份配置和持久化运行数据，保留旧版本与镜像，再执行升级。不要直接删除旧容器中尚未导出的家庭数据。
+
+```sh
+docker compose stop
 ```
 
-正常启动应看到：
-
-```
-[Server] HTTP listening on 0.0.0.0:8090
-[Camera] Snapshot daemon started
-[Automation] Loaded N rules (enabled=true)
-```
-
-### 2.6 验证
-
-浏览器开 `http://NAS_IP:8090`，看到仪表盘。
-
-```bash
-# 命令行 health
-curl -s http://NAS_IP:8090/api/snapshot.json | head -c 200
-```
-
----
-
-## 3. 备选路径：Mac 打包 → 拷到 NAS
-
-> 适合不想给 NAS 装编译环境，或者要分发给别人用的场景。需要 Mac 上有 Docker Desktop / OrbStack / Colima 任一。
-
-```bash
-cd /path/to/homesense
-
-# 1) build（Mac 是 arm64，群晖是 x86 → 加 --platform 交叉编译）
-docker build --platform linux/amd64 -t homesense:0.3.0 .
-
-# 2) 导出
-docker save homesense:0.3.0 -o homesense.tar
-
-# 3) 传到群晖
-scp homesense.tar USER@NAS_IP:/volume1/docker/homesense/
-scp config.json docker-compose.yml USER@NAS_IP:/volume1/docker/homesense/
-
-# 4) 群晖端 load + up
-ssh USER@NAS_IP
-cd /volume1/docker/homesense
-sudo docker load -i homesense.tar
-sudo docker compose up -d
-```
-
----
-
-## 4. 用 Container Manager UI（不爱命令行的）
-
-1. 打开 **Container Manager** → 项目 → 新增
-2. 项目名称：`homesense`
-3. 路径：选 `/volume1/docker/homesense`
-4. 来源：选 `从 docker-compose.yml 创建`（系统自动识别）
-5. 下一步 → 启动
-
-UI 启动后日志页能直接看到容器输出。
-
----
-
-## 5. 常见问题
-
-### Q1：容器启动后立即 exit
-
-```bash
-sudo docker logs homesense
-```
-
-最常见原因：
-- **`Cannot find module ... config.json`** → `volumes` 路径错，确认 `./config.json` 在当前目录存在
-- **`EACCES: permission denied`** → 群晖创建的文件 owner 是 admin (uid 1026)，容器里 node 用户 (uid 1000) 读不到。两种解法：
-  1. `sudo chmod 644 /volume1/docker/homesense/config.json`
-  2. docker-compose.yml 取消注释 `user: "1026:100"`
-
-### Q2：HA 调不通（`Failed to fetch HA states`）
-
-```bash
-sudo docker exec homesense curl -s http://192.168.X.X:8123/api/ -H "Authorization: Bearer YOUR_TOKEN"
-```
-
-不通的可能：
-- HA 在同台 NAS 容器跑 → url 改 `http://172.17.0.1:8123`，或启用 `network_mode: host`
-- HA 在另一台机器 → 检查防火墙、IP 段
-
-### Q3：RTSP 拉不到流
-
-```bash
-sudo docker exec homesense ffmpeg -rtsp_transport tcp -i "rtsp://USER:PASS@..." -t 3 -frames:v 1 -y /tmp/test.jpg
-```
-
-- `401 Unauthorized` → DSM SS 重新生成 RTSP 密码
-- `Connection refused` → 用 host 网络模式
-
-### Q4：DashScope 调不通
-
-```bash
-sudo docker exec homesense curl -s -X POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen-turbo","messages":[{"role":"user","content":"hi"}]}'
-```
-
-应返回 `{"choices":[...]}`。`Invalid API-key` → key 错。超时 → 群晖访问公网受限。
-
-### Q5：CPU 100%（4K HEVC 软解打满）
-
-群晖 CPU 弱（J4115/V1500B 这类），**强烈建议**摄像头/SS 端转 1080p H.264：
-- 萤石 APP → 设备设置 → 视频质量 → 流畅/标清
-- 海康/大华 → IPC web → 编码改 H.264 + 1080p
-
-或在 docker-compose.yml 加资源限制保护其他服务：
-
-```yaml
-deploy:
-  resources:
-    limits:
-      memory: 512M
-      cpus: "1.5"
-```
-
----
-
-## 6. 日常运维
-
-```bash
-# 看日志
-sudo docker logs --tail 100 homesense
-sudo docker logs -f homesense
-
-# 改了 config.json 不需要重 build，重启即可
-sudo docker restart homesense
-
-# 升级（在群晖 build 路径下）
-cd /volume1/docker/homesense
-git pull   # 如果用 git；否则手动 rsync 新代码
-sudo docker compose down
-sudo docker build -t homesense:0.3.0 .
-sudo docker compose up -d
-
-# 停 / 删
-sudo docker compose down
-sudo docker rmi homesense:0.3.0
-```
-
----
-
-## 7. 备份
-
-需要备份 `config.json`（连接、规则与安全配置）、`memory.json`（家庭偏好）、`face-data/`（经同意录入的人脸特征）和运行目录中的 `nova-runtime.sqlite`（事件与质量账本）。快照与音频缓存可以不备份。
-
-```bash
-# 群晖端定时备份
-cp /volume1/docker/homesense/config.json /volume1/backup/homesense-$(date +%Y%m%d).json
-```
-
-snapshots/ + audio/ 是缓存，不用备份。
-
----
-
-## 8. 已知限制（Docker 部署）
-
-- **本地麦克风模式不可用**：容器内没有 macOS avfoundation，audioSource 必须用 `rtsp` 模式（从摄像头音频流唤醒）
-- **macOS `say` TTS 不可用**：要语音反馈必须用小爱音箱（HA notify）
-- **VideoToolbox 硬解不可用**：群晖只能软解，4K HEVC 流务必转 1080p H.264
-
----
-
-## 9. 想发布给别人用？
-
-- 把镜像推到 Docker Hub：
-  ```bash
-  docker tag homesense:0.3.0 YOUR_DOCKERHUB_USER/homesense:0.1.0
-  docker push YOUR_DOCKERHUB_USER/homesense:0.1.0
-  ```
-- 别人 docker-compose.yml 里 image 改成 `YOUR_DOCKERHUB_USER/homesense:0.1.0`，`docker compose up -d` 就跑起来了
-
-> 这步等社区文章 + GitHub 仓库立稳之后再做，先别急。
-
-> v0.3 Docker 配置已改为 `config/config.json` 目录挂载。旧版升级前请阅读 [v0.3 安装、备份与回退](docs/UPGRADE_0.3.md)，该文档优先于旧部署示例。当前 v0.3 为未发布开发版本。
+备份包含敏感数据，只保存在私有位置。媒体是否保留按使用需要决定。代码仓库只保存模板、文档与虚构测试数据。
